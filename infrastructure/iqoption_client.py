@@ -44,6 +44,7 @@ class IQOptionClient:
     # Tras esta cantidad de timeouts seguidos de velas, se asume que el websocket
     # quedó mudo (TCP vivo pero sin datos) y se fuerza una reconexión.
     _CANDLE_TIMEOUT_RECONNECT = 3
+    _INIT_TIMEOUT = 12.0
 
     def __init__(self, email: str, password: str, allow_real: bool = False):
         self._email = email
@@ -123,6 +124,107 @@ class IQOptionClient:
     # ------------------------------------------------------------------ #
     #  Datos de mercado
     # ------------------------------------------------------------------ #
+    def _raw_api(self):
+        return getattr(self._api, "api", None)
+
+    def _wait_for_attr(self, attr: str, timeout: float):
+        raw = self._raw_api()
+        if raw is None:
+            return None, True
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            value = getattr(raw, attr, None)
+            if value is not None:
+                return value, False
+            time.sleep(0.05)
+        return None, True
+
+    def _request_init_v2(self, timeout: float = _INIT_TIMEOUT) -> dict:
+        """Lee initialization-data v2 sin usar el busy-wait de stable_api."""
+        raw = self._raw_api()
+        if raw is None:
+            return {}
+        try:
+            raw.api_option_init_all_result_v2 = None
+            raw.get_api_option_init_all_v2()
+            data, timed_out = self._wait_for_attr("api_option_init_all_result_v2", timeout)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"No se pudo solicitar get_api_option_init_all_v2(): {exc}")
+            return {}
+        if timed_out:
+            # Si alguna llamada vieja de stable_api quedó esperando, esto evita que
+            # siga girando en `while ... == None: pass`.
+            try:
+                raw.api_option_init_all_result_v2 = {}
+            except Exception:  # noqa: BLE001
+                pass
+            logger.warning(f"get_api_option_init_all_v2() TIMEOUT ({timeout:.0f}s).")
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _request_init_all(self, timeout: float = _INIT_TIMEOUT) -> dict:
+        """Lee api_option_init_all sin el bucle activo de stable_api.get_all_init()."""
+        raw = self._raw_api()
+        if raw is None:
+            return {}
+        try:
+            raw.api_option_init_all_result = None
+            raw.get_api_option_init_all()
+            data, timed_out = self._wait_for_attr("api_option_init_all_result", timeout)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"No se pudo solicitar api_option_init_all(): {exc}")
+            return {}
+        if timed_out:
+            try:
+                raw.api_option_init_all_result = {}
+            except Exception:  # noqa: BLE001
+                pass
+            logger.warning(f"api_option_init_all() TIMEOUT ({timeout:.0f}s).")
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    @staticmethod
+    def _init_root(init: dict) -> dict:
+        result = init.get("result") if isinstance(init, dict) else None
+        return result if isinstance(result, dict) else (init or {})
+
+    def _iter_binary_sections(self, init: dict):
+        root = self._init_root(init)
+        for kind in ("turbo", "binary"):
+            actives = (root.get(kind) or {}).get("actives", {})
+            if isinstance(actives, dict):
+                for data in actives.values():
+                    if isinstance(data, dict):
+                        yield kind, data
+
+    def _open_times_from_init(self, init: dict) -> dict:
+        result: dict = {"turbo": {}, "binary": {}}
+        for kind, data in self._iter_binary_sections(init):
+            name = self._clean_active_name(data.get("name", ""))
+            if not name:
+                continue
+            enabled = data.get("enabled", True)
+            suspended = data.get("is_suspended", False)
+            result[kind][name] = {"open": bool(enabled) and not bool(suspended)}
+        return result
+
+    def _profits_from_init(self, init: dict) -> dict:
+        result: dict = {}
+        for kind, data in self._iter_binary_sections(init):
+            name = self._clean_active_name(data.get("name", ""))
+            if not name:
+                continue
+            profit = ((data.get("option") or {}).get("profit") or {})
+            commission = profit.get("commission")
+            if commission is None:
+                continue
+            try:
+                payout = (100.0 - float(commission)) / 100.0
+            except (TypeError, ValueError):
+                continue
+            result.setdefault(name, {})[kind] = payout
+        return result
+
     def get_candles(self, asset: str, interval: int, count: int,
                     endtime: float | None = None,
                     timeout: float = 20.0) -> list[dict]:
@@ -215,26 +317,7 @@ class IQOptionClient:
         Devuelve la misma estructura que get_all_open_time:
             {"turbo": {"EURUSD": {"open": True}, ...}, "binary": {...}}
         """
-        try:
-            init = self._api.get_all_init_v2()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(f"No se pudo leer get_all_init_v2(): {exc}")
-            return {}
-
-        result: dict = {"turbo": {}, "binary": {}}
-        if not isinstance(init, dict):
-            return result
-
-        for kind in ("turbo", "binary"):
-            actives = (init.get(kind) or {}).get("actives", {})
-            if not isinstance(actives, dict):
-                continue
-            for data in actives.values():
-                name = self._clean_active_name((data or {}).get("name", ""))
-                if not name:
-                    continue
-                result[kind][name] = {"open": not bool((data or {}).get("is_suspended", False))}
-        return result
+        return self._open_times_from_init(self._request_init_v2())
 
     def get_actives_opcode(self) -> dict:
         """Catálogo {nombre: id} de TODOS los activos (instantáneo, estático).
@@ -280,12 +363,8 @@ class IQOptionClient:
         return self.classify_asset(asset, data) == "open"
 
     def get_profits(self) -> dict:
-        """Dict crudo de get_all_profit() (o {} si falla)."""
-        try:
-            return self._api.get_all_profit() or {}
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(f"No se pudo leer get_all_profit(): {exc}")
-            return {}
+        """Payouts turbo/binary sin usar el busy-wait de stable_api.get_all_profit()."""
+        return self._profits_from_init(self._request_init_all())
 
     @staticmethod
     def payout_from(asset: str, profits: dict) -> float:
