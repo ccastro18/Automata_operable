@@ -1,0 +1,1111 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>IQ Binary Bot — Panel</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --border:#283040;
+    --text:#e6edf3; --muted:#8b949e; --green:#2ea043; --red:#da3633;
+    --accent:#388bfd; --amber:#d29922;
+  }
+  * { box-sizing:border-box; }
+  html, body { overflow-x:hidden; }
+  body { margin:0; font-family:system-ui,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--text); }
+  header { display:flex; align-items:center; justify-content:space-between; gap:18px;
+    padding:14px 20px; background:var(--panel); border-bottom:1px solid var(--border); }
+  header h1 { font-size:18px; margin:0; line-height:1.1; }
+  .header-left { display:flex; align-items:center; gap:18px; min-width:0; flex-wrap:wrap; }
+  .brand { display:flex; align-items:center; gap:8px; min-width:max-content; }
+  .brand-mark { font-size:20px; line-height:1; }
+  .status-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .header-actions { display:flex; align-items:center; justify-content:flex-end; gap:10px; flex-wrap:wrap; }
+  .spacer { flex:1; }
+  .badge { padding:4px 10px; border-radius:20px; font-size:12px; font-weight:600;
+    border:1px solid var(--border); background:var(--panel2); }
+  .badge.on { background:rgba(46,160,67,.15); color:#3fb950; border-color:#2ea04355; }
+  .badge.off { background:rgba(218,54,51,.15); color:#f85149; border-color:#da363355; }
+  .badge.warn { background:rgba(210,153,34,.15); color:#e3b341; border-color:#d2992255; }
+  button { cursor:pointer; border:1px solid var(--border); background:var(--panel2);
+    color:var(--text); padding:8px 14px; border-radius:8px; font-size:13px; font-weight:600; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--green); border-color:var(--green); color:#fff; }
+  button.danger { background:var(--red); border-color:var(--red); color:#fff; }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  main { padding:20px; max-width:1200px; margin:0 auto; }
+  .grid { display:grid; gap:16px; }
+  .cards { grid-template-columns:repeat(auto-fit,minmax(145px,1fr)); margin-bottom:20px; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:16px; }
+  .card .label { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.5px; }
+  .card .value { font-size:26px; font-weight:700; margin-top:6px; }
+  .pos { color:#3fb950; } .neg { color:#f85149; }
+  .panel { background:var(--panel); border:1px solid var(--border); border-radius:8px;
+    padding:16px; margin-bottom:20px; }
+  .panel h2 { font-size:14px; margin:0 0 14px; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .chips { display:flex; gap:8px; flex-wrap:wrap; }
+  .chip { display:flex; align-items:center; gap:8px; background:var(--panel2);
+    border:1px solid var(--border); border-radius:20px; padding:7px 8px 7px 14px; font-weight:600; min-height:36px; min-width:0; }
+  .chip span.otc { font-size:10px; color:var(--amber); }
+  .chip button { padding:2px 8px; border-radius:50%; line-height:1; background:transparent; }
+  .chip button:hover { background:var(--red); border-color:var(--red); }
+  .asset-name { font-size:14px; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .asset-live { color:#79c0ff; font-size:11px; font-weight:800; }
+  .asset-controls { display:grid; grid-template-columns:minmax(260px, 1fr) auto auto minmax(180px, 1fr);
+    gap:10px; align-items:center; margin-top:14px; }
+  .asset-controls select { width:100%; min-width:0; }
+  .asset-legend { display:flex; gap:9px; flex-wrap:wrap; margin-top:12px; align-items:center; }
+  .legend-item { display:inline-flex; align-items:center; gap:4px; white-space:nowrap; }
+  .dot { font-size:14px; vertical-align:middle; }
+  .dot.open { color:#3fb950; } .dot.closed { color:#f85149; }
+  .dot.nf { color:#db61a2; } .dot.off { color:#d29922; } .dot.unk { color:#8b949e; }
+  .chip .st { font-size:11px; }
+  .payout { font-size:11px; font-weight:700; padding:1px 7px; border-radius:6px; }
+  .payout.ok { background:rgba(46,160,67,.18); color:#3fb950; }
+  .payout.low { background:rgba(218,54,51,.18); color:#f85149; }
+  input, select { background:var(--panel2); border:1px solid var(--border); color:var(--text);
+    padding:7px 10px; border-radius:8px; font-size:13px; }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--border); white-space:nowrap; }
+  th { color:var(--muted); font-weight:600; position:sticky; top:0; background:var(--panel); }
+  .tbl-wrap { max-height:420px; overflow:auto; border:1px solid var(--border); border-radius:8px; }
+  .tag { padding:2px 8px; border-radius:6px; font-size:11px; font-weight:700; }
+  .tag.call { background:rgba(46,160,67,.18); color:#3fb950; }
+  .tag.put { background:rgba(218,54,51,.18); color:#f85149; }
+  .tag.win { background:rgba(46,160,67,.18); color:#3fb950; }
+  .tag.loss { background:rgba(218,54,51,.18); color:#f85149; }
+  .tag.draw { background:rgba(139,148,158,.18); color:var(--muted); }
+  .tag.pending { background:rgba(56,139,253,.18); color:#79c0ff; }
+  .tag.error { background:rgba(210,153,34,.18); color:#e3b341; }
+  .tag.real { background:rgba(56,139,253,.18); color:#79c0ff; }
+  .tag.paper { background:rgba(210,153,34,.18); color:#e3b341; }
+  tr.row-pending td { background:rgba(56,139,253,.06); }
+  tr.row-error td { background:rgba(210,153,34,.06); }
+  .seg { display:inline-flex; border:1px solid var(--border); border-radius:8px; overflow:hidden; }
+  .seg button { border:none; border-radius:0; }
+  .seg button.active { background:var(--accent); color:#fff; }
+  .short-label { display:none; }
+  .view-toolbar { display:flex; align-items:center; justify-content:flex-end; gap:10px; margin-bottom:16px; }
+  .date-filter { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .date-filter input { width:190px; }
+  .live-strip { display:none; border:1px solid #388bfd66; background:rgba(56,139,253,.08);
+    border-radius:8px; padding:12px 16px; margin-bottom:16px; }
+	  .live-strip.show { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+	  .live-title { color:#79c0ff; font-size:12px; text-transform:uppercase; letter-spacing:.5px; font-weight:800; }
+	  .live-main { display:flex; align-items:center; gap:10px; flex-wrap:wrap; font-weight:700; }
+	  .live-meta { color:var(--muted); font-size:12px; }
+	  .sys-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(135px,1fr)); gap:12px; }
+	  .sys-card { background:var(--panel2); border:1px solid var(--border); border-radius:8px; padding:12px; min-width:0; }
+	  .sys-label { color:var(--muted); font-size:11px; text-transform:uppercase; font-weight:700; }
+	  .sys-value { font-size:22px; font-weight:800; margin-top:5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+	  .meter { height:5px; background:#0a0d12; border-radius:999px; overflow:hidden; margin-top:9px; }
+	  .meter-fill { height:100%; width:0%; background:var(--accent); transition:width .25s ease; }
+	  .meter-fill.warn { background:var(--amber); }
+	  .meter-fill.danger { background:var(--red); }
+	  .section-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:14px; }
+  .section-head h2 { margin:0; }
+  .section-meta { color:var(--muted); font-size:12px; }
+  .two-col { grid-template-columns:1fr 1fr; }
+  .three-col { grid-template-columns:repeat(3, minmax(0, 1fr)); }
+  .analytics-grid { grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); margin-bottom:20px; }
+  .empty-note { color:var(--muted); font-size:12px; padding:16px; border:1px dashed var(--border);
+    border-radius:8px; background:rgba(139,148,158,.05); }
+  .insight { display:flex; gap:10px; align-items:flex-start; padding:9px 12px; border-radius:8px;
+    margin-bottom:8px; font-size:13px; border:1px solid var(--border); background:var(--panel2); line-height:1.4; }
+  .insight:last-child { margin-bottom:0; }
+  .insight .ic { font-size:15px; line-height:1.3; }
+  .insight.good { border-color:#2ea04355; background:rgba(46,160,67,.08); }
+  .insight.bad  { border-color:#da363355; background:rgba(218,54,51,.08); }
+  .insight.warn { border-color:#d2992255; background:rgba(210,153,34,.08); }
+  .db-table-link { color:#79c0ff; cursor:pointer; font-weight:700; }
+  .db-table-link:hover { text-decoration:underline; }
+  @media (max-width:900px){ .three-col{ grid-template-columns:1fr; } }
+  @media (max-width:780px){ .two-col{ grid-template-columns:1fr; } }
+  @media (max-width:820px){
+    header { align-items:flex-start; flex-direction:column; padding:14px 20px; }
+    .header-left, .header-actions { width:100%; min-width:0; }
+    .header-left { flex-direction:column; align-items:flex-start; gap:10px; }
+    .status-row { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); width:100%; gap:8px; }
+    .status-row .badge { text-align:center; min-width:0; }
+    .header-actions { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:10px; }
+    .header-actions button { width:100%; min-width:0; }
+    main { padding:18px 20px; }
+    .view-toolbar { align-items:stretch; justify-content:flex-start; flex-direction:column; }
+    .view-toolbar .seg { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); width:100%; }
+    .view-toolbar .seg button { flex:1 1 0; min-width:0; }
+    .full-label { display:none; }
+    .short-label { display:inline; }
+    .asset-controls { grid-template-columns:1fr auto; }
+    .asset-controls .muted { grid-column:1 / -1; }
+    .cards { grid-template-columns:repeat(2, minmax(0, 1fr)); }
+    .card { min-width:0; }
+    .card .value { font-size:24px; }
+  }
+  @media (max-width:520px){
+    header, main { width:390px; max-width:100%; margin-left:auto; margin-right:auto; }
+    header { gap:12px; }
+    .status-row { display:grid; grid-template-columns:1fr 1fr; width:100%; }
+    .header-actions { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    #btn-exit { grid-column:1 / -1; }
+    main { padding:16px 20px; }
+    .tabs { overflow-x:auto; }
+    .tab { flex:1 0 auto; }
+    .view-toolbar .seg { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); }
+    .view-toolbar .seg button { width:100%; padding-left:6px; padding-right:6px; }
+    .chip { width:100%; justify-content:flex-start; gap:6px; }
+    .chip .st { display:none; }
+    .asset-name { flex:1; }
+    .asset-controls { grid-template-columns:1fr; }
+    .asset-controls button { width:100%; }
+    .asset-legend { max-height:48px; overflow:auto; padding-right:4px; }
+    .col-extra { display:none; }
+    th, td { padding:8px 9px; }
+  }
+  .muted { color:var(--muted); font-size:12px; }
+  .err { color:#f85149; font-size:12px; }
+
+  /* Tabs */
+  .tabs { display:flex; gap:6px; margin-bottom:18px; border-bottom:1px solid var(--border); }
+  .tab { background:transparent; border:none; border-bottom:2px solid transparent;
+    border-radius:0; color:var(--muted); padding:10px 16px; font-size:14px; }
+  .tab.active { color:var(--text); border-bottom-color:var(--accent); }
+  .hidden-tab { display:none; }
+
+  /* Form config */
+  .cfg-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px 28px; }
+  @media (max-width:760px){ .cfg-grid{ grid-template-columns:1fr; } }
+  .cfg-row { display:flex; flex-direction:column; gap:4px; }
+  .cfg-row label { font-size:13px; font-weight:600; }
+  .cfg-row .help { color:var(--muted); font-size:11px; }
+  .cfg-row input[type=number] { width:160px; }
+  .cfg-actions { display:flex; align-items:center; gap:12px; margin-top:18px; }
+  .ok-msg { color:#3fb950; font-size:13px; }
+
+  /* Logs */
+  #log-view { background:#0a0d12; border:1px solid var(--border); border-radius:10px;
+    padding:10px; height:480px; overflow:auto; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px; }
+  .logline { white-space:pre-wrap; padding:1px 0; color:#c9d1d9; }
+  .lvl-WARNING { color:#e3b341; } .lvl-ERROR { color:#f85149; }
+  .lvl-SUCCESS { color:#3fb950; } .lvl-DEBUG { color:#8b949e; }
+
+  /* Spinner */
+  .spin { display:inline-block; width:13px; height:13px; border:2px solid currentColor;
+    border-top-color:transparent; border-radius:50%; animation:spin .7s linear infinite;
+    vertical-align:-2px; margin-right:5px; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+
+  /* Overlay de carga / conexión */
+  #overlay { position:fixed; inset:0; background:rgba(13,17,23,.82); z-index:50;
+    display:flex; align-items:center; justify-content:center; flex-direction:column; gap:16px; }
+  #overlay .big { width:46px; height:46px; border-width:4px; color:var(--accent); }
+  #overlay .txt { font-size:15px; color:var(--text); }
+  #overlay.hidden { display:none; }
+</style>
+</head>
+<body>
+<div id="overlay">
+  <div class="spin big"></div>
+  <div class="txt" id="overlay-txt">Cargando panel…</div>
+</div>
+<header>
+  <div class="header-left">
+    <div class="brand">
+      <span class="brand-mark">🤖</span>
+      <h1>IQ Binary Bot</h1>
+    </div>
+    <div class="status-row">
+      <span id="b-conn" class="badge">…</span>
+      <span id="b-mode" class="badge">…</span>
+      <span id="b-balance" class="badge">balance —</span>
+      <span id="b-run" class="badge">…</span>
+    </div>
+  </div>
+  <div class="header-actions">
+    <button id="btn-start" class="primary" onclick="startBot()">▶ Encender</button>
+    <button id="btn-stop" class="danger" onclick="stopBot()">■ Apagar</button>
+    <button id="btn-reconnect" onclick="reconnect()">⟳ Reconectar</button>
+    <button id="btn-recover" onclick="recoverService()" title="Reiniciar conexión interna sin apagar el bot" style="display:none;">↻ <span class="full-label">Reparar conexión</span><span class="short-label">Reparar</span></button>
+    <button id="btn-exit" onclick="exitApp()" title="Cerrar la aplicación de forma segura">⏻ Salir</button>
+  </div>
+</header>
+
+<main>
+  <div id="err-box" class="err" style="margin-bottom:12px;"></div>
+
+  <div class="tabs">
+    <button class="tab active" data-tab="monitor" onclick="switchTab('monitor')">📊 Monitoreo</button>
+    <button class="tab" data-tab="analytics" onclick="switchTab('analytics')">📈 Estadísticas</button>
+    <button class="tab" data-tab="db" onclick="switchTab('db')">🗄 DB</button>
+    <button class="tab" data-tab="config" onclick="switchTab('config')">⚙️ Configuración</button>
+    <button class="tab" data-tab="logs" onclick="switchTab('logs')">📜 Logs</button>
+  </div>
+
+  <!-- ===================== PESTAÑA MONITOREO ===================== -->
+  <div id="tab-monitor">
+
+  <div class="view-toolbar">
+    <span class="muted">Ver:</span>
+    <div class="seg kind-seg">
+      <button data-kind="all" class="active" onclick="setKind('all')">Todo</button>
+      <button data-kind="real" onclick="setKind('real')"><span class="full-label">Real (demo)</span><span class="short-label">Real</span></button>
+      <button data-kind="paper" onclick="setKind('paper')"><span class="full-label">Paper (filtrado)</span><span class="short-label">Paper</span></button>
+    </div>
+    <span class="spacer"></span>
+    <div class="date-filter">
+      <span class="muted">Desde:</span>
+      <input class="since-input" type="datetime-local" onchange="setSince(this.value)" />
+      <button onclick="clearSince()">Todo</button>
+    </div>
+  </div>
+
+	  <div id="active-trades" class="live-strip"></div>
+
+	  <div class="panel" id="system-panel" style="display:none;">
+	    <div class="section-head">
+	      <h2>Sistema</h2>
+	      <span class="section-meta" id="sys-meta">—</span>
+	    </div>
+	    <div class="sys-grid">
+	      <div class="sys-card">
+	        <div class="sys-label">CPU</div>
+	        <div class="sys-value" id="sys-cpu">—</div>
+	        <div class="meter"><div class="meter-fill" id="sys-cpu-bar"></div></div>
+	      </div>
+	      <div class="sys-card">
+	        <div class="sys-label">RAM</div>
+	        <div class="sys-value" id="sys-ram">—</div>
+	        <div class="meter"><div class="meter-fill" id="sys-ram-bar"></div></div>
+	      </div>
+	      <div class="sys-card">
+	        <div class="sys-label">Bot CPU</div>
+	        <div class="sys-value" id="sys-proc-cpu">—</div>
+	        <div class="meter"><div class="meter-fill" id="sys-proc-cpu-bar"></div></div>
+	      </div>
+	      <div class="sys-card">
+	        <div class="sys-label">Bot RAM</div>
+	        <div class="sys-value" id="sys-proc-ram">—</div>
+	      </div>
+	      <div class="sys-card">
+	        <div class="sys-label">Temp</div>
+	        <div class="sys-value" id="sys-temp">—</div>
+	      </div>
+	      <div class="sys-card">
+	        <div class="sys-label">Carga</div>
+	        <div class="sys-value" id="sys-load">—</div>
+	      </div>
+	    </div>
+	  </div>
+
+	  <!-- Tarjetas -->
+  <div class="grid cards" id="cards"></div>
+
+  <!-- Activos -->
+  <div class="panel">
+    <div class="section-head">
+      <h2>Activos</h2>
+      <span class="section-meta"><span id="asset-count">0</span>/<span id="max-assets">4</span></span>
+    </div>
+    <div class="chips" id="asset-chips"></div>
+    <div class="asset-controls">
+      <select id="asset-select">
+        <option value="">Conéctate para listar activos…</option>
+      </select>
+      <button class="primary" id="btn-add" onclick="addAsset()">+ Añadir</button>
+      <button id="btn-reload" onclick="loadAvailable()" title="Recargar lista de activos">⟳</button>
+      <span id="asset-msg" class="muted"></span>
+    </div>
+    <details style="margin-top:10px;">
+      <summary class="muted" style="cursor:pointer;">¿No aparece en la lista? Añadir manualmente</summary>
+      <div class="row" style="margin-top:8px;">
+        <input id="asset-input" placeholder="Ej: EURUSD o EURUSD-OTC" onkeydown="if(event.key==='Enter')addManual()" />
+        <button onclick="addManual()">+ Añadir manual</button>
+      </div>
+    </details>
+    <div class="muted asset-legend">
+      <span class="legend-item"><span class="dot open">●</span> abierto</span>
+      <span class="legend-item"><span class="dot closed">●</span> cerrado</span>
+      <span class="legend-item"><span class="dot nf">●</span> no existe</span>
+      <span class="legend-item"><span class="dot off">●</span> OTC off</span>
+      <span class="legend-item"><span class="dot unk">●</span> desconocido</span>
+      <span class="legend-item">Payout <span class="payout ok">≥mín</span> <span class="payout low">&lt;mín</span></span>
+    </div>
+  </div>
+
+  <!-- Motivos de rechazo (paper) -->
+  <div class="panel">
+    <h2>Filtros: rendimiento de señales rechazadas (paper-trade)</h2>
+    <p class="muted">Si un grupo tiene win-rate alto, ese filtro quizá te está costando operaciones buenas.</p>
+    <div class="tbl-wrap"><table id="tbl-reject"></table></div>
+  </div>
+
+  <!-- Trades recientes -->
+  <div class="panel">
+    <h2>Operaciones recientes</h2>
+    <div class="tbl-wrap"><table id="tbl-trades"></table></div>
+  </div>
+
+  </div><!-- /tab-monitor -->
+
+  <!-- ===================== PESTAÑA ESTADÍSTICAS ===================== -->
+  <div id="tab-analytics" class="hidden-tab">
+    <div class="view-toolbar">
+      <span class="muted">Ver:</span>
+      <div class="seg kind-seg">
+        <button data-kind="all" class="active" onclick="setKind('all')">Todo</button>
+        <button data-kind="real" onclick="setKind('real')"><span class="full-label">Real (demo)</span><span class="short-label">Real</span></button>
+        <button data-kind="paper" onclick="setKind('paper')"><span class="full-label">Paper (filtrado)</span><span class="short-label">Paper</span></button>
+      </div>
+      <span class="spacer"></span>
+      <div class="date-filter">
+        <span class="muted">Desde:</span>
+        <input class="since-input" type="datetime-local" onchange="setSince(this.value)" />
+        <button onclick="clearSince()">Todo</button>
+      </div>
+      <button onclick="downloadReport('stats')" title="Descargar resumen básico (CSV)">⬇ Resumen</button>
+      <button onclick="downloadReport('analytics')" title="Descargar informe completo de estadísticas (CSV)">⬇ Informe CSV</button>
+    </div>
+
+    <!-- Conclusiones automáticas -->
+    <div class="panel" id="insights-panel">
+      <div class="section-head"><h2>Conclusiones</h2>
+        <span class="section-meta">Lectura rápida de lo que dicen los datos</span></div>
+      <div id="insights-list"><span class="muted">Cargando…</span></div>
+    </div>
+
+    <div class="grid analytics-grid" id="analytics-coverage"></div>
+
+    <div class="grid two-col">
+      <div class="panel"><h2>Profit neto por activo</h2><canvas id="chart-analytics-asset" height="160"></canvas></div>
+      <div class="panel"><h2>Win / Loss por día</h2><canvas id="chart-analytics-day" height="160"></canvas></div>
+    </div>
+
+    <div class="grid two-col">
+      <div class="panel"><h2>Squeeze vs resultado</h2><canvas id="chart-squeeze" height="160"></canvas></div>
+      <div class="panel"><h2>RSI vs resultado</h2><canvas id="chart-rsi" height="160"></canvas></div>
+    </div>
+
+    <div class="grid three-col">
+      <div class="panel">
+        <h2>Filtros evaluados</h2>
+        <div class="tbl-wrap"><table id="tbl-filter-analytics"></table></div>
+      </div>
+      <div class="panel">
+        <h2>Contexto de mercado</h2>
+        <div class="tbl-wrap"><table id="tbl-market-analytics"></table></div>
+      </div>
+      <div class="panel">
+        <h2>Outcomes reconstruidos</h2>
+        <div id="outcome-empty" class="empty-note hidden-tab">Aún no hay filas en trade_outcomes para graficar MFE/MAE.</div>
+        <div class="tbl-wrap"><table id="tbl-outcome-analytics"></table></div>
+      </div>
+    </div>
+  </div><!-- /tab-analytics -->
+
+  <!-- ===================== PESTAÑA DB ===================== -->
+  <div id="tab-db" class="hidden-tab">
+    <div class="panel">
+      <div class="section-head">
+        <h2>Base de datos</h2>
+        <button class="primary" onclick="downloadDb()" title="Descargar toda la BD (.sqlite)">⬇ Descargar BD completa (.sqlite)</button>
+      </div>
+      <p class="muted">Explora las tablas y descarga lo que necesites. La descarga de la BD completa
+        es una copia consistente (incluye el WAL) que puedes abrir con cualquier visor de SQLite.</p>
+      <div class="tbl-wrap"><table id="tbl-db-tables"></table></div>
+    </div>
+
+    <div class="panel" id="db-preview-panel" style="display:none;">
+      <div class="section-head">
+        <h2>Vista previa: <span id="db-preview-name"></span></h2>
+        <div class="row">
+          <span class="muted" id="db-preview-meta"></span>
+          <button onclick="downloadTable()" title="Descargar esta tabla (CSV)">⬇ CSV</button>
+        </div>
+      </div>
+      <div class="tbl-wrap" style="max-height:520px;"><table id="tbl-db-preview"></table></div>
+    </div>
+  </div><!-- /tab-db -->
+
+  <!-- ===================== PESTAÑA CONFIGURACIÓN ===================== -->
+  <div id="tab-config" class="hidden-tab">
+    <div class="panel">
+      <h2>Parámetros del bot</h2>
+      <p class="muted">Los cambios se guardan y se aplican en caliente (a las próximas
+        operaciones / próximo escaneo). Sobrescriben lo del archivo .env.</p>
+      <div id="cfg-container"></div>
+      <div class="cfg-actions">
+        <button class="primary" onclick="saveConfig()">💾 Guardar cambios</button>
+        <button onclick="loadConfig()">↺ Descartar</button>
+        <span id="cfg-msg" class="muted"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== PESTAÑA LOGS ===================== -->
+  <div id="tab-logs" class="hidden-tab">
+    <div class="panel">
+      <div class="row" style="justify-content:space-between; margin-bottom:12px;">
+        <h2 style="margin:0;">Logs en tiempo real</h2>
+        <div class="row">
+          <button id="btn-log-pause" onclick="toggleLogPause()">⏸ Pausar</button>
+          <button onclick="clearLogs()">🗑 Limpiar</button>
+        </div>
+      </div>
+      <div id="log-view"></div>
+    </div>
+  </div>
+</main>
+
+<script>
+let KIND = "all";
+let SINCE = "";
+let CONNECTING = false;
+let LAST_CONNECTED = false;
+let LAST_RUNNING = false;
+let LAST_RECOVERING = false;
+let SYSTEM_SUPPORTED = false;
+let LAST_SYSTEM_POLL = 0;
+let AVAIL_LOADED = false;
+let STOPPED = false;
+let CURRENT_TAB = "monitor";
+let chartAsset = null, chartDay = null, chartSqueeze = null, chartRsi = null;
+
+const fmtMoney = v => (v>=0?"+":"") + Number(v).toFixed(2);
+const cls = v => v>=0 ? "pos" : "neg";
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({
+  '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'
+}[c]));
+
+async function api(path, opts={}) {
+  const ctrl = new AbortController();
+  const t = setTimeout(()=>ctrl.abort(), 8000);
+  try {
+    const r = await fetch(path, {...opts, signal: ctrl.signal});
+    if (!r.ok) { const e = await r.json().catch(()=>({detail:r.statusText})); throw new Error(e.detail||"Error"); }
+    return await r.json();
+  } catch(e){
+    if (e.name === "AbortError") throw new Error("El servidor no respondió a tiempo.");
+    throw e;
+  } finally { clearTimeout(t); }
+}
+
+function setKind(k){
+  KIND = k;
+  document.querySelectorAll('.kind-seg button').forEach(b=>b.classList.toggle('active', b.dataset.kind===k));
+  refreshStats(); refreshTrades();
+  if(CURRENT_TAB === 'analytics') refreshAnalytics();
+}
+
+function filteredQuery(extra={}){
+  const q = new URLSearchParams({kind: KIND, ...extra});
+  if(SINCE) q.set('from', SINCE);
+  return q.toString();
+}
+
+function setSince(value){
+  SINCE = value || "";
+  document.querySelectorAll('.since-input').forEach(i=>{ if(i.value !== SINCE) i.value = SINCE; });
+  refreshStats(); refreshTrades();
+  if(CURRENT_TAB === 'analytics') refreshAnalytics();
+}
+
+function clearSince(){
+  setSince("");
+}
+
+// ---------------- Estado ----------------
+function setOverlay(show, text){
+  const ov = document.getElementById('overlay');
+  if(show){ document.getElementById('overlay-txt').textContent = text||"Cargando…"; ov.classList.remove('hidden'); }
+  else { ov.classList.add('hidden'); }
+}
+
+async function refreshStatus(){
+  try {
+		    const s = await api('/api/status');
+		    const supportsRecover = Object.prototype.hasOwnProperty.call(s, 'recovering');
+		    SYSTEM_SUPPORTED = supportsRecover;
+		    CONNECTING = s.connecting || s.recovering;
+	    LAST_CONNECTED = s.connected;
+	    LAST_RUNNING = s.running;
+	    LAST_RECOVERING = s.recovering;
+	    document.getElementById('err-box').textContent = s.last_error ? ("⚠ "+s.last_error) : "";
+
+	    // Overlay solo mientras se conecta/recupera la conexión de IQ Option.
+	    if(s.recovering) setOverlay(true, "Reiniciando conexión interna…");
+	    else setOverlay(s.connecting, "Conectando con IQ Option… (puede tardar unos segundos)");
+
+	    const conn = document.getElementById('b-conn');
+	    if(s.recovering){ conn.innerHTML = '<span class="spin"></span>Recuperando…'; conn.className = "badge warn"; }
+	    else if(s.connecting){ conn.innerHTML = '<span class="spin"></span>Conectando…'; conn.className = "badge warn"; }
+	    else { conn.textContent = s.connected ? "● Conectado" : "○ Desconectado"; conn.className = "badge " + (s.connected?"on":"off"); }
+
+    const mode = document.getElementById('b-mode');
+    mode.textContent = s.account_mode;
+    mode.className = "badge " + (s.account_mode==="PRACTICE"?"on":"warn");
+
+    document.getElementById('b-balance').textContent = "balance $" + s.balance.toFixed(2);
+
+	    const run = document.getElementById('b-run');
+	    const resuming = !s.running && s.wanted_running && (s.connecting || s.recovering);
+	    if(resuming){ run.innerHTML = '<span class="spin"></span>Reanudando'; run.className = "badge warn"; }
+	    else { run.textContent = s.running ? "▶ Operando" : "■ Detenido"; run.className = "badge " + (s.running?"on":"off"); }
+
+	    document.getElementById('btn-start').disabled = s.running || s.connecting || s.recovering;
+	    document.getElementById('btn-stop').disabled = !s.running || s.recovering;
+	    document.getElementById('btn-reconnect').disabled = s.connecting || s.recovering || s.connected;
+		    const recoverBtn = document.getElementById('btn-recover');
+		    recoverBtn.style.display = supportsRecover ? '' : 'none';
+		    recoverBtn.disabled = s.connecting || s.recovering;
+	    document.getElementById('system-panel').style.display = SYSTEM_SUPPORTED ? '' : 'none';
+	    document.getElementById('max-assets').textContent = s.max_assets;
+    document.getElementById('asset-count').textContent = (s.assets||[]).length;
+
+    renderAssets(s.assets, s.asset_info||{}, s.open_positions, s.max_assets, s.min_payout);
+
+    // Cargar la lista de activos disponibles al conectar (y reintentar si vacía).
+    if(s.connected && !AVAIL_LOADED) loadAvailable();
+    if(!s.connected) AVAIL_LOADED = false;
+  } catch(e){
+    document.getElementById('err-box').textContent = "⚠ "+e.message;
+    setOverlay(false);
+  }
+}
+
+async function loadAvailable(){
+  const sel = document.getElementById('asset-select');
+  try {
+    const r = await api('/api/available-assets');
+    if(!r.connected){ sel.innerHTML = '<option value="">Conéctate para listar activos…</option>'; AVAIL_LOADED=false; return; }
+    if(!r.assets.length){ sel.innerHTML = '<option value="">Cargando activos… (espera unos segundos)</option>'; AVAIL_LOADED=false; return; }
+    AVAIL_LOADED = true;
+    sel.innerHTML = '<option value="">— Elige un activo —</option>' + r.assets.map(a=>{
+      const pay = a.payout!=null ? ` · ${Math.round(a.payout*100)}%` : "";
+      const dot = a.open ? "🟢" : "🔴";
+      const mark = a.selected ? " ✓ ya añadido" : "";
+      return `<option value="${a.name}" ${a.selected?'disabled':''}>${dot} ${a.name}${a.is_otc?' (OTC)':''}${pay}${mark}</option>`;
+    }).join('');
+  } catch(e){ document.getElementById('asset-msg').textContent = e.message; }
+}
+
+const STATUS_META = {
+  open:      {dot:"open",   txt:"abierto"},
+  closed:    {dot:"closed", txt:"cerrado"},
+  not_found: {dot:"nf",     txt:"no existe"},
+  otc_off:   {dot:"off",    txt:"OTC off"},
+  unknown:   {dot:"unk",    txt:"desconocido"},
+};
+
+function renderAssets(assets, infoMap, openPos, max, minPayout){
+  const wrap = document.getElementById('asset-chips');
+  wrap.innerHTML = "";
+  if(!assets.length){ wrap.innerHTML = '<span class="muted">Sin activos. Añade al menos uno.</span>'; }
+  assets.forEach(a=>{
+    const otc = a.toUpperCase().endsWith("OTC");
+    const open = openPos.includes(a);
+    const info = infoMap[a] || {status:"unknown", payout:null};
+    const st = STATUS_META[info.status] || STATUS_META.unknown;
+
+    let payoutHtml = "";
+    if(info.payout != null){
+      const pct = Math.round(info.payout*100);
+      const low = info.payout < minPayout;
+      payoutHtml = `<span class="payout ${low?'low':'ok'}" title="${low?'Por debajo del payout mínimo':'Cumple el payout mínimo'}">${pct}%</span>`;
+    }
+
+    const chip = document.createElement('div');
+    chip.className = "chip";
+    chip.innerHTML = `<span class="dot ${st.dot}">●</span>
+      <span class="asset-name">${esc(a)}</span>
+      ${otc?'<span class="otc">OTC</span>':''}
+      <span class="st muted">${esc(st.txt)}</span>
+      ${payoutHtml}
+      ${open?'<span class="asset-live">● en curso</span>':''}
+      <button title="Quitar" onclick="removeAsset('${esc(a)}')">✕</button>`;
+    wrap.appendChild(chip);
+  });
+  const full = assets.length >= max;
+  document.getElementById('asset-input').disabled = full;
+  document.getElementById('asset-select').disabled = full;
+  document.getElementById('btn-add').disabled = full;
+  if(full) document.getElementById('asset-msg').textContent = `Máximo ${max} activos. Quita uno para añadir otro.`;
+  else if(document.getElementById('asset-msg').textContent.startsWith('Máximo')) document.getElementById('asset-msg').textContent = "";
+}
+
+// ---------------- Acciones ----------------
+async function startBot(){
+  if(!LAST_CONNECTED){ setOverlay(true,"Conectando con IQ Option… (puede tardar unos segundos)"); CONNECTING=true; }
+  try{ await api('/api/bot/start',{method:'POST'}); }catch(e){ alert(e.message);} refreshStatus();
+}
+async function stopBot(){ try{ await api('/api/bot/stop',{method:'POST'}); }catch(e){ alert(e.message);} refreshStatus(); }
+async function exitApp(){
+  if(!confirm("¿Cerrar la aplicación de forma segura?\nEl bot dejará de operar y el servidor se apagará.")) return;
+  STOPPED = true;
+  setOverlay(true, "Cerrando la aplicación de forma segura…");
+  try { await api('/api/shutdown',{method:'POST'}); } catch(e){ /* el server se cae, es normal */ }
+  setOverlay(true, "✓ Aplicación cerrada. Ya puedes cerrar esta pestaña.");
+}
+async function reconnect(){
+  setOverlay(true,"Conectando con IQ Option… (puede tardar unos segundos)"); CONNECTING=true;
+  try{ await api('/api/connect',{method:'POST'}); }catch(e){ alert(e.message);} refreshStatus();
+}
+async function recoverService(){
+  setOverlay(true,"Reiniciando conexión interna…");
+  CONNECTING=true;
+  try{ await api('/api/service/recover',{method:'POST'}); }catch(e){ alert(e.message);}
+  refreshStatus();
+}
+
+function pctText(v){
+  return v == null ? '—' : `${Number(v).toFixed(1)}%`;
+}
+function mbText(v){
+  if(v == null) return '—';
+  const n = Number(v);
+  return `${n >= 100 ? n.toFixed(0) : n.toFixed(1)} MB`;
+}
+function setMeter(id, value){
+  const el = document.getElementById(id);
+  if(!el) return;
+  const v = value == null ? 0 : Math.max(0, Math.min(100, Number(value)));
+  el.style.width = `${v}%`;
+  el.className = 'meter-fill' + (v >= 85 ? ' danger' : (v >= 70 ? ' warn' : ''));
+}
+function fmtUptime(seconds){
+  if(seconds == null) return '';
+  const s = Math.max(0, Number(seconds));
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if(d > 0) return `${d}d ${h}h`;
+  if(h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+function renderSystem(s){
+  const cpu = s.cpu || {};
+  const memory = s.memory || {};
+  const proc = s.process || {};
+  document.getElementById('sys-cpu').textContent = pctText(cpu.percent);
+  document.getElementById('sys-ram').textContent = pctText(memory.used_percent);
+  document.getElementById('sys-proc-cpu').textContent = pctText(proc.cpu_percent);
+  document.getElementById('sys-proc-ram').textContent = mbText(proc.rss_mb);
+  document.getElementById('sys-temp').textContent = s.temperature_c == null ? '—' : `${Number(s.temperature_c).toFixed(1)} °C`;
+  document.getElementById('sys-load').textContent =
+    cpu.load_1m == null ? '—' : `${Number(cpu.load_1m).toFixed(2)} / ${cpu.cores || 1}c`;
+  const bits = [];
+  if(s.host) bits.push(esc(s.host));
+  const up = fmtUptime(s.uptime_seconds);
+  if(up) bits.push(`up ${up}`);
+  document.getElementById('sys-meta').textContent = bits.length ? bits.join(' · ') : '—';
+  setMeter('sys-cpu-bar', cpu.percent);
+  setMeter('sys-ram-bar', memory.used_percent);
+  setMeter('sys-proc-cpu-bar', proc.cpu_percent);
+}
+async function refreshSystem(force=false){
+  if(!SYSTEM_SUPPORTED || CURRENT_TAB !== 'monitor') return;
+  const now = Date.now();
+  if(!force && now - LAST_SYSTEM_POLL < 5000) return;
+  LAST_SYSTEM_POLL = now;
+  try {
+    const s = await api('/api/system');
+    renderSystem(s);
+  } catch(e){
+    document.getElementById('sys-meta').textContent = 'sin datos';
+  }
+}
+
+async function doAdd(a){
+  if(!a){ document.getElementById('asset-msg').textContent = "Elige un activo."; return; }
+  try {
+    await api('/api/assets/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({asset:a})});
+    document.getElementById('asset-msg').textContent="";
+  } catch(e){ document.getElementById('asset-msg').textContent = e.message; }
+  await refreshStatus();
+  loadAvailable();   // refresca marcas "ya añadido"
+}
+async function addAsset(){ await doAdd(document.getElementById('asset-select').value); }
+async function addManual(){
+  const inp = document.getElementById('asset-input');
+  await doAdd(inp.value.trim());
+  inp.value="";
+}
+async function removeAsset(a){
+  try { await api('/api/assets/'+encodeURIComponent(a),{method:'DELETE'}); }catch(e){ alert(e.message); }
+  await refreshStatus();
+  loadAvailable();
+}
+
+// ---------------- Estadísticas ----------------
+async function refreshStats(){
+  const s = await api('/api/stats?'+filteredQuery());
+  const t = s.totals;
+  document.getElementById('cards').innerHTML = `
+    ${card('Operaciones', t.trades)}
+    ${card('Ganadas', t.wins, 'pos')}
+    ${card('Perdidas', t.losses, 'neg')}
+    ${card('Pendientes', t.pending)}
+    ${card('Errores', t.errors, t.errors ? 'neg' : '')}
+    ${card('Win rate', t.win_rate.toFixed(1)+'%')}
+    ${card('Profit neto', fmtMoney(t.net_profit), cls(t.net_profit))}
+  `;
+  renderRejectTable(s.by_reject_reason);
+}
+function card(label,val,extra=''){
+  return `<div class="card"><div class="label">${label}</div><div class="value ${extra}">${val}</div></div>`;
+}
+
+function renderRejectTable(rows){
+  const t = document.getElementById('tbl-reject');
+  if(!rows.length){ t.innerHTML = '<tr><td class="muted">Aún no hay paper-trades.</td></tr>'; return; }
+  t.innerHTML = '<tr><th>Motivo de rechazo</th><th>Trades</th><th>Win</th><th>Loss</th><th>Win rate</th></tr>' +
+    rows.map(r=>`<tr><td>${r.reject_reason}</td><td>${r.trades}</td><td>${r.wins}</td><td>${r.losses}</td>
+      <td>${r.win_rate.toFixed(1)}%</td></tr>`).join('');
+}
+
+function renderBarChart(canvasId, chartRef, rows, labelKey, valueKey, colorFn){
+  if(typeof Chart==='undefined') return;
+  const ctx = document.getElementById(canvasId);
+  if(!ctx) return chartRef;
+  const labels = rows.map(r=>r[labelKey]);
+  const data = rows.map(r=>Number(r[valueKey] || 0));
+  const colors = data.map(colorFn || (v=> v>=0 ? '#2ea043' : '#da3633'));
+  if(chartRef) chartRef.destroy();
+  return new Chart(ctx,{type:'bar',data:{labels,datasets:[{data,backgroundColor:colors,borderRadius:4}]},
+    options:{plugins:{legend:{display:false}},
+      scales:{x:{ticks:{color:'#8b949e'},grid:{color:'rgba(139,148,158,.08)'}},
+        y:{ticks:{color:'#8b949e'},grid:{color:'rgba(139,148,158,.08)'}}}}});
+}
+
+function renderStackedWinLoss(canvasId, chartRef, rows, labelKey){
+  if(typeof Chart==='undefined') return;
+  const r = [...rows].reverse();
+  const ctx = document.getElementById(canvasId);
+  if(!ctx) return chartRef;
+  const labels = r.map(x=>x[labelKey]);
+  if(chartRef) chartRef.destroy();
+  return new Chart(ctx,{type:'bar',data:{labels,datasets:[
+      {label:'Win',data:r.map(x=>x.wins),backgroundColor:'#2ea043',borderRadius:4},
+      {label:'Loss',data:r.map(x=>x.losses),backgroundColor:'#da3633',borderRadius:4}]},
+    options:{plugins:{legend:{labels:{color:'#8b949e'}}},
+      scales:{x:{stacked:true,ticks:{color:'#8b949e'},grid:{color:'rgba(139,148,158,.08)'}},
+        y:{stacked:true,ticks:{color:'#8b949e'},grid:{color:'rgba(139,148,158,.08)'}}}}});
+}
+
+const INSIGHT_ICON = {good:'✅', bad:'🔻', warn:'⚠️', info:'ℹ️'};
+function renderInsights(items){
+  const box = document.getElementById('insights-list');
+  if(!items || !items.length){
+    box.innerHTML = '<span class="muted">Aún no hay suficientes datos para sacar conclusiones.</span>';
+    return;
+  }
+  box.innerHTML = items.map(i=>`<div class="insight ${esc(i.level)}">
+    <span class="ic">${INSIGHT_ICON[i.level]||'•'}</span><span>${esc(i.text)}</span></div>`).join('');
+}
+
+async function refreshAnalytics(){
+  try {
+    const a = await api('/api/analytics?'+filteredQuery());
+    renderInsights(a.insights || []);
+    renderCoverage(a.coverage || {});
+    chartAsset = renderBarChart('chart-analytics-asset', chartAsset, a.by_asset || [], 'asset', 'net_profit');
+    chartDay = renderStackedWinLoss('chart-analytics-day', chartDay, a.by_day || [], 'date');
+    chartSqueeze = renderStackedWinLoss('chart-squeeze', chartSqueeze, (a.market||{}).squeeze || [], 'bucket');
+    chartRsi = renderStackedWinLoss('chart-rsi', chartRsi, (a.market||{}).rsi || [], 'bucket');
+    renderFilterAnalytics(a.filter_performance || []);
+    renderMarketAnalytics((a.market||{}).trend || []);
+    renderOutcomeAnalytics(a.outcomes || []);
+  } catch(e) {
+    renderInsights([]);
+    document.getElementById('analytics-coverage').innerHTML =
+      `<div class="empty-note">La API de estadísticas avanzadas aún no está disponible en el servidor activo. Reinicia el panel para cargar el nuevo backend.</div>`;
+  }
+}
+
+function renderCoverage(c){
+  document.getElementById('analytics-coverage').innerHTML = `
+    ${card('Trades', c.trades || 0)}
+    ${card('Snapshots', `${c.market_snapshots || 0} · ${(c.market_snapshots_pct || 0).toFixed(0)}%`)}
+    ${card('Filtros', `${c.filter_trades || 0} · ${(c.filter_trades_pct || 0).toFixed(0)}%`)}
+    ${card('Velas', `${c.candle_trades || 0} · ${(c.candle_trades_pct || 0).toFixed(0)}%`)}
+    ${card('API ctx', `${c.api_contexts || 0} · ${(c.api_contexts_pct || 0).toFixed(0)}%`)}
+    ${card('Outcomes', `${c.outcomes || 0} · ${(c.outcomes_pct || 0).toFixed(0)}%`)}
+  `;
+}
+
+function renderFilterAnalytics(rows){
+  const t = document.getElementById('tbl-filter-analytics');
+  if(!rows.length){ t.innerHTML = '<tr><td class="muted">Sin filtros evaluados todavía.</td></tr>'; return; }
+  t.innerHTML = '<tr><th>Filtro</th><th>Tipo</th><th>Eval.</th><th>Disparó</th><th>Bloqueó</th><th>Win rate</th></tr>' +
+    rows.map(r=>`<tr>
+      <td>${esc(r.filter_name)}</td>
+      <td><span class="tag ${r.filter_type==='HARD'?'loss':'pending'}">${esc(r.filter_type)}</span></td>
+      <td>${r.evaluations}</td>
+      <td>${r.triggered} (${Number(r.trigger_rate||0).toFixed(0)}%)</td>
+      <td>${r.blocked}</td>
+      <td>${Number(r.triggered_win_rate||0).toFixed(1)}%</td>
+    </tr>`).join('');
+}
+
+function renderMarketAnalytics(rows){
+  const t = document.getElementById('tbl-market-analytics');
+  if(!rows.length){ t.innerHTML = '<tr><td class="muted">Sin contexto de mercado todavía.</td></tr>'; return; }
+  t.innerHTML = '<tr><th>Tendencia</th><th>Trades</th><th>Win</th><th>Loss</th><th>Win rate</th><th>Profit</th></tr>' +
+    rows.map(r=>`<tr>
+      <td>${esc(r.bucket)}</td><td>${r.trades}</td><td>${r.wins}</td><td>${r.losses}</td>
+      <td>${Number(r.win_rate||0).toFixed(1)}%</td>
+      <td class="${(r.net_profit||0)>=0?'pos':'neg'}">${fmtMoney(r.net_profit||0)}</td>
+    </tr>`).join('');
+}
+
+function renderOutcomeAnalytics(rows){
+  const empty = document.getElementById('outcome-empty');
+  const t = document.getElementById('tbl-outcome-analytics');
+  const useful = rows.filter(r => (r.outcomes || 0) > 0);
+  empty.classList.toggle('hidden-tab', useful.length > 0);
+  if(!useful.length){ t.innerHTML = ''; return; }
+  const pct = v => v!=null ? Number(v).toFixed(3)+'%' : '—';
+  const payout = v => v!=null ? (Number(v)*100).toFixed(1)+'%' : '—';
+  t.innerHTML = '<tr><th>Resultado</th><th>Filas</th><th title="Máx. recorrido a favor, % del precio">MFE</th>'+
+    '<th title="Máx. recorrido en contra, % del precio">MAE</th>'+
+    '<th title="Payout real derivado del profit (profit/monto en win)">Payout real</th><th>1er profit</th></tr>' +
+    useful.map(r=>`<tr>
+      <td><span class="tag ${esc(r.result)}">${esc((r.result||'').toUpperCase())}</span></td>
+      <td>${r.outcomes}</td>
+      <td class="pos">${pct(r.avg_mfe_pct)}</td>
+      <td class="neg">${pct(r.avg_mae_pct)}</td>
+      <td>${payout(r.avg_realized_payout)}</td>
+      <td>${r.avg_seconds_to_first_profit!=null?Number(r.avg_seconds_to_first_profit).toFixed(1)+'s':'—'}</td>
+    </tr>`).join('');
+}
+
+// ---------------- Trades ----------------
+async function refreshTrades(){
+  const s = await api('/api/trades?'+filteredQuery({limit: 60}));
+  try {
+    const all = await api('/api/trades?kind=all&limit=60');
+    renderActiveTrades(all.trades);
+  } catch(e){ renderActiveTrades([]); }
+  const t = document.getElementById('tbl-trades');
+  if(!s.trades.length){ t.innerHTML='<tr><td class="muted">Sin operaciones todavía.</td></tr>'; return; }
+  t.innerHTML = '<tr><th>Entrada</th><th>Tipo</th><th>Activo</th><th>Dir</th><th>Payout</th>'+
+    '<th>Resultado</th><th>Profit</th><th class="col-extra">Instrum.</th><th class="col-extra">Orden</th><th class="col-extra">Delay</th><th class="col-extra">RSI</th><th class="col-extra">Rechazo</th><th class="col-extra">Notas</th></tr>' +
+    s.trades.map(r=>{
+      const result = r.result || '';
+      const profitText = result === 'pending' ? '—' : fmtMoney(r.profit||0);
+      const rowClass = result === 'pending' ? 'row-pending' : (result === 'error' ? 'row-error' : '');
+      return `<tr class="${rowClass}">
+      <td>${esc(r.time||'')}<span class="muted col-extra"> · ${esc(r.date||'')}</span></td>
+      <td><span class="tag ${esc(r.kind)}">${esc(r.kind)}</span></td>
+      <td>${esc(r.asset||'')}${r.is_otc?' <span style="color:#d29922;font-size:10px">OTC</span>':''}</td>
+      <td><span class="tag ${esc(r.direction)}">${esc((r.direction||'').toUpperCase())}</span></td>
+      <td>${r.payout!=null?(r.payout*100).toFixed(0)+'%':''}</td>
+      <td><span class="tag ${esc(result)}">${esc(result.toUpperCase())}</span></td>
+      <td class="${(r.profit||0)>=0?'pos':'neg'}">${profitText}</td>
+      <td class="muted col-extra">${esc(r.market_type||'')}</td>
+      <td class="muted col-extra">${esc(r.order_id||'')}</td>
+      <td class="col-extra">${r.entry_delay_seconds!=null?r.entry_delay_seconds.toFixed(1)+'s':''}</td>
+      <td class="col-extra">${r.rsi!=null?r.rsi.toFixed(0):''}</td>
+      <td class="muted col-extra">${esc(r.reject_reason||'')}</td>
+      <td class="muted col-extra" title="${esc(r.notes||'')}">${esc((r.notes||'').slice(0,44))}</td>
+    </tr>`;
+    }).join('');
+}
+
+function renderActiveTrades(trades){
+  const box = document.getElementById('active-trades');
+  const pending = (trades || []).filter(r => r.result === 'pending');
+  if(!pending.length){
+    box.className = 'live-strip';
+    box.innerHTML = '';
+    return;
+  }
+  const p = pending.find(r => r.kind === 'real') || pending[0];
+  const more = pending.length > 1 ? `+${pending.length - 1} más` : '';
+  const title = p.kind === 'real' ? 'Operación en curso' : 'Seguimiento pendiente';
+  box.className = 'live-strip show';
+  box.innerHTML = `
+    <div>
+      <div class="live-title">${title}</div>
+      <div class="live-main">
+        <span>${esc(p.asset)}</span>
+        <span class="tag ${esc(p.direction)}">${esc((p.direction||'').toUpperCase())}</span>
+        <span class="tag ${esc(p.kind)}">${esc(p.kind)}</span>
+        <span class="tag pending">PENDING</span>
+      </div>
+    </div>
+    <div class="live-meta">
+      ${esc(p.time||'')} · $${Number(p.amount || 0).toFixed(2)} · payout ${p.payout!=null?(p.payout*100).toFixed(0)+'%':'—'} ${more}
+    </div>`;
+}
+
+// ---------------- Descargas ----------------
+function triggerDownload(url){
+  const a = document.createElement('a');
+  a.href = url; a.rel = 'noopener';
+  document.body.appendChild(a); a.click(); a.remove();
+}
+function downloadReport(type){ triggerDownload(`/api/${type}/export?${filteredQuery()}`); }
+function downloadDb(){ triggerDownload('/api/db/download'); }
+function downloadTable(){ if(CURRENT_DB_TABLE) triggerDownload('/api/db/table/export?name='+encodeURIComponent(CURRENT_DB_TABLE)); }
+
+// ---------------- Pestaña DB ----------------
+let CURRENT_DB_TABLE = null;
+
+async function loadDbTables(){
+  const t = document.getElementById('tbl-db-tables');
+  try {
+    const r = await api('/api/db/tables');
+    if(!r.tables.length){ t.innerHTML = '<tr><td class="muted">Sin tablas.</td></tr>'; return; }
+    t.innerHTML = '<tr><th>Tabla</th><th>Filas</th><th>Columnas</th><th></th></tr>' +
+      r.tables.map(tb=>`<tr>
+        <td><span class="db-table-link" onclick="previewDbTable('${esc(tb.name)}')">${esc(tb.name)}</span></td>
+        <td>${tb.rows.toLocaleString()}</td>
+        <td class="muted">${tb.columns.length}</td>
+        <td><button onclick="event.stopPropagation();triggerDownload('/api/db/table/export?name=${encodeURIComponent(tb.name)}')" ${tb.rows?'':'disabled'}>⬇ CSV</button></td>
+      </tr>`).join('');
+  } catch(e){ t.innerHTML = `<tr><td class="err">⚠ ${esc(e.message)}</td></tr>`; }
+}
+
+async function previewDbTable(name){
+  CURRENT_DB_TABLE = name;
+  const panel = document.getElementById('db-preview-panel');
+  panel.style.display = '';
+  document.getElementById('db-preview-name').textContent = name;
+  const t = document.getElementById('tbl-db-preview');
+  t.innerHTML = '<tr><td class="muted">Cargando…</td></tr>';
+  try {
+    const r = await api('/api/db/table?name='+encodeURIComponent(name)+'&limit=100');
+    document.getElementById('db-preview-meta').textContent =
+      `${r.rows.length} de ${r.total.toLocaleString()} filas (más recientes)`;
+    if(!r.rows.length){ t.innerHTML = '<tr><td class="muted">Tabla vacía.</td></tr>'; return; }
+    const cols = r.columns;
+    t.innerHTML = '<tr>' + cols.map(c=>`<th>${esc(c)}</th>`).join('') + '</tr>' +
+      r.rows.map(row=>'<tr>' + cols.map(c=>{
+        let v = row[c];
+        if(v===null||v===undefined) return '<td class="muted">·</td>';
+        v = String(v);
+        return `<td title="${esc(v)}">${esc(v.length>40?v.slice(0,40)+'…':v)}</td>`;
+      }).join('') + '</tr>').join('');
+    panel.scrollIntoView({behavior:'smooth', block:'nearest'});
+  } catch(e){ t.innerHTML = `<tr><td class="err">⚠ ${esc(e.message)}</td></tr>`; }
+}
+
+// ---------------- Pestañas ----------------
+let CFG_SCHEMA = [];
+let CFG_LOADED = false;
+
+function switchTab(name){
+  CURRENT_TAB = name;
+  document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active', b.dataset.tab===name));
+  document.getElementById('tab-monitor').classList.toggle('hidden-tab', name!=='monitor');
+  document.getElementById('tab-analytics').classList.toggle('hidden-tab', name!=='analytics');
+  document.getElementById('tab-db').classList.toggle('hidden-tab', name!=='db');
+  document.getElementById('tab-config').classList.toggle('hidden-tab', name!=='config');
+  document.getElementById('tab-logs').classList.toggle('hidden-tab', name!=='logs');
+	  if(name==='analytics') refreshAnalytics();
+	  if(name==='db') loadDbTables();
+	  if(name==='config' && !CFG_LOADED) loadConfig();
+	  if(name==='monitor') refreshSystem(true);
+	}
+
+// ---------------- Logs ----------------
+let LOG_LAST = 0, LOG_PAUSED = false;
+function toggleLogPause(){
+  LOG_PAUSED = !LOG_PAUSED;
+  document.getElementById('btn-log-pause').textContent = LOG_PAUSED ? '▶ Reanudar' : '⏸ Pausar';
+}
+function clearLogs(){ const v=document.getElementById('log-view'); if(v) v.innerHTML=''; }
+function appendLogs(logs){
+  const view = document.getElementById('log-view');
+  if(!view) return;
+  const atBottom = view.scrollHeight - view.scrollTop - view.clientHeight < 50;
+  logs.forEach(l=>{
+    const div = document.createElement('div');
+    div.className = 'logline lvl-'+l.level;
+    div.textContent = `${l.time}  ${(l.level||'').padEnd(7)} ${l.module} | ${l.message}`;
+    view.appendChild(div);
+  });
+  while(view.childElementCount > 600) view.removeChild(view.firstChild);
+  if(atBottom) view.scrollTop = view.scrollHeight;
+}
+async function pollLogs(){
+  if(STOPPED) return;
+  if(!LOG_PAUSED){
+    try {
+      const r = await api('/api/logs?after='+LOG_LAST);
+      if(r.logs && r.logs.length){ LOG_LAST = r.last_id; appendLogs(r.logs); }
+    } catch(e){}
+  }
+  if(!STOPPED) setTimeout(pollLogs, LAST_RUNNING ? 800 : 1500);
+}
+
+async function loadConfig(){
+  const cont = document.getElementById('cfg-container');
+  document.getElementById('cfg-msg').textContent = "";
+  try {
+    const r = await api('/api/config');
+    CFG_SCHEMA = r.schema;
+    CFG_LOADED = true;
+    const groups = {};
+    r.schema.forEach(f=>{ (groups[f.group] = groups[f.group]||[]).push(f); });
+    let html = "";
+    for(const g in groups){
+      html += `<h2 style="margin-top:18px;">${g}</h2><div class="cfg-grid">`;
+      groups[g].forEach(f=>{
+        const v = r.config[f.key];
+        let input;
+        if(f.type==='bool'){
+          input = `<input type="checkbox" id="cfg-${f.key}" ${v?'checked':''} style="width:18px;height:18px;">`;
+        } else {
+          const step = f.type==='int' ? '1' : 'any';
+          const mn = f.min!=null?`min="${f.min}"`:'';
+          const mx = f.max!=null?`max="${f.max}"`:'';
+          input = `<input type="number" id="cfg-${f.key}" value="${v}" step="${step}" ${mn} ${mx}>`;
+        }
+        html += `<div class="cfg-row"><label for="cfg-${f.key}">${f.label}</label>
+          ${input}<span class="help">${f.help}</span></div>`;
+      });
+      html += `</div>`;
+    }
+    cont.innerHTML = html;
+  } catch(e){ document.getElementById('cfg-msg').textContent = "⚠ "+e.message; }
+}
+
+async function saveConfig(){
+  const body = {};
+  CFG_SCHEMA.forEach(f=>{
+    const el = document.getElementById('cfg-'+f.key);
+    if(!el) return;
+    body[f.key] = f.type==='bool' ? el.checked : el.value;
+  });
+  const msg = document.getElementById('cfg-msg');
+  try {
+    await api('/api/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    msg.className = "ok-msg"; msg.textContent = "✓ Guardado y aplicado";
+    CFG_LOADED = false; await loadConfig();
+    refreshStatus();  // min_payout / allow_otc afectan el monitoreo
+  } catch(e){ msg.className = "err"; msg.textContent = "⚠ "+e.message; }
+}
+
+// ---------------- Loop ----------------
+async function refreshAll(){
+  await refreshStatus();
+  await refreshSystem();
+  try{
+    await refreshStats();
+    await refreshTrades();
+    if(CURRENT_TAB === 'analytics') await refreshAnalytics();
+  }catch(e){}
+}
+// Refresco adaptativo: rápido mientras conecta, normal el resto del tiempo.
+async function loop(){
+  if(STOPPED) return;            // detiene el polling tras salir
+  try{ await refreshAll(); }catch(e){}
+  if(!STOPPED) setTimeout(loop, CONNECTING ? 1000 : (LAST_RUNNING ? 1500 : 4000));
+}
+loop();
+pollLogs();
+</script>
+</body>
+</html>

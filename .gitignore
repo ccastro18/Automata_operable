@@ -1,0 +1,32 @@
+# Credenciales y datos
+.env
+.env.otc
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+
+# Datos generados
+data/*.csv
+data/*.db
+data/*.db-wal
+data/*.db-shm
+logs/*.log
+logs/server.out
+notebooks/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.DS_Store
+
+# Estado local de asistentes/herramientas
+.claude/
+
+# Checkout local de referencia; la dependencia real se instala desde requirements.txt
+iqoptionapi-src/

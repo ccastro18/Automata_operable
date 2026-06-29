@@ -1,0 +1,13 @@
+pandas
+numpy
+python-dotenv
+pydantic
+pydantic-settings
+rich
+loguru
+fastapi
+uvicorn[standard]
+
+# Librería comunitaria NO oficial de IQ Option (solo para estudio).
+# Se instala directamente desde GitHub:
+git+https://github.com/iqoptionapi/iqoptionapi.git
