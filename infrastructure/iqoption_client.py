@@ -261,11 +261,9 @@ class IQOptionClient:
             if commission is None:
                 continue
             try:
-                payout = float(commission)
+                payout = (100.0 - float(commission)) / 100.0
             except (TypeError, ValueError):
                 continue
-            if payout > 1:
-                payout /= 100.0
             if payout <= 0:
                 continue
             result.setdefault(name, {})[kind] = payout
