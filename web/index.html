@@ -60,7 +60,7 @@
   .legend-item { display:inline-flex; align-items:center; gap:4px; white-space:nowrap; }
   .dot { font-size:14px; vertical-align:middle; }
   .dot.open { color:#3fb950; } .dot.closed { color:#f85149; }
-  .dot.nf { color:#db61a2; } .dot.off { color:#d29922; } .dot.unk { color:#8b949e; }
+  .dot.nf { color:#db61a2; } .dot.off { color:#d29922; } .dot.unk { color:#8b949e; } .dot.deg { color:#d29922; }
   .chip .st { font-size:11px; }
   .payout { font-size:11px; font-weight:700; padding:1px 7px; border-radius:6px; }
   .payout.ok { background:rgba(46,160,67,.18); color:#3fb950; }
@@ -594,6 +594,7 @@ const STATUS_META = {
   closed:    {dot:"closed", txt:"cerrado"},
   not_found: {dot:"nf",     txt:"no existe"},
   otc_off:   {dot:"off",    txt:"OTC off"},
+  degraded:  {dot:"deg",    txt:"sin snapshot"},
   unknown:   {dot:"unk",    txt:"desconocido"},
 };
 

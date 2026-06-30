@@ -53,6 +53,8 @@ class IQOptionClient:
         self._api = None  # instancia de IQ_Option
         self._candle_timeouts = 0  # timeouts de velas consecutivos (watchdog)
         self._ws_lock = threading.Lock()
+        self._ws_reconnect_required = False
+        self._last_init_v2_timed_out = False
 
     # ------------------------------------------------------------------ #
     #  Conexión
@@ -132,21 +134,22 @@ class IQOptionClient:
         """Verifica/reconecta el websocket antes de pedir snapshots de mercado."""
         if self._api is None:
             return False
+        reconnect_required = self._ws_reconnect_required
         try:
-            if self._api.check_connect():
+            if not reconnect_required and self._api.check_connect():
                 return True
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"No se pudo verificar websocket IQ Option: {exc}")
 
         with self._ws_lock:
             try:
-                if self._api.check_connect():
+                if not self._ws_reconnect_required and self._api.check_connect():
                     return True
             except Exception:  # noqa: BLE001
                 pass
 
             try:
-                logger.warning("Websocket IQ Option no conectado; se intenta reconectar antes del refresh de mercado.")
+                logger.warning("Websocket IQ Option no responde bien; se intenta reconectar antes del refresh de mercado.")
                 check, reason = self._api.connect()
             except Exception as exc:  # noqa: BLE001
                 logger.warning(f"Reconexión websocket IQ Option falló: {exc}")
@@ -162,6 +165,7 @@ class IQOptionClient:
                 logger.warning(f"No se pudo reafirmar cuenta PRACTICE tras reconectar: {exc}")
                 return False
             time.sleep(0.5)
+            self._ws_reconnect_required = False
             logger.success("Websocket IQ Option reconectado para refresh de mercado.")
             return True
 
@@ -179,6 +183,7 @@ class IQOptionClient:
 
     def _request_init_v2(self, timeout: float = _INIT_TIMEOUT) -> dict:
         """Lee initialization-data v2 sin usar el busy-wait de stable_api."""
+        self._last_init_v2_timed_out = False
         if not self._ensure_ws_connected():
             return {}
         raw = self._raw_api()
@@ -198,8 +203,11 @@ class IQOptionClient:
                 raw.api_option_init_all_result_v2 = {}
             except Exception:  # noqa: BLE001
                 pass
+            self._last_init_v2_timed_out = True
+            self._ws_reconnect_required = True
             logger.warning(f"get_api_option_init_all_v2() TIMEOUT ({timeout:.0f}s).")
             return {}
+        self._ws_reconnect_required = False
         return data if isinstance(data, dict) else {}
 
     def _request_init_all(self, timeout: float = _INIT_TIMEOUT) -> dict:
@@ -221,8 +229,10 @@ class IQOptionClient:
                 raw.api_option_init_all_result = {}
             except Exception:  # noqa: BLE001
                 pass
+            self._ws_reconnect_required = True
             logger.warning(f"api_option_init_all() TIMEOUT ({timeout:.0f}s).")
             return {}
+        self._ws_reconnect_required = False
         return data if isinstance(data, dict) else {}
 
     @staticmethod
@@ -285,6 +295,8 @@ class IQOptionClient:
         profits = self._profits_from_init(init_v2)
 
         if self._open_times_count(open_times) and profits:
+            return {"open_times": open_times, "profits": profits}
+        if self._last_init_v2_timed_out and not self._open_times_count(open_times):
             return {"open_times": open_times, "profits": profits}
 
         init_all = self._request_init_all(timeout=4.0)

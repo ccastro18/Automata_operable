@@ -209,9 +209,11 @@ class BotController:
         self._profit_cache_ts: float = 0.0
         self._open_latency_ms: float | None = None
         self._profit_latency_ms: float | None = None
+        self._last_market_cache_save_ts: float = 0.0
 
         # Inicializa la lista de activos desde el .env si la BD está vacía.
         self.db.init_assets_if_empty(self.settings.assets[: self.max_assets])
+        self._load_market_cache_from_db()
 
     # ------------------------------------------------------------------ #
     #  Configuración editable
@@ -230,6 +232,49 @@ class BotController:
                     self.config[k] = runtime_config.coerce(k, v)
                 except ValueError:
                     pass  # ignora valores inválidos guardados
+
+    def _load_market_cache_from_db(self) -> None:
+        saved = self.db.get_setting("market_cache")
+        if not saved:
+            return
+        try:
+            data = json.loads(saved)
+        except json.JSONDecodeError:
+            return
+
+        open_cache = data.get("open_cache") or {}
+        profit_cache = data.get("profit_cache") or {}
+        if not isinstance(open_cache, dict) or not isinstance(profit_cache, dict):
+            return
+
+        self._open_cache = open_cache
+        self._profit_cache = profit_cache
+        saved_at = float(data.get("saved_at") or 0.0)
+        self._open_cache_ts = float(data.get("open_cache_ts") or saved_at)
+        self._profit_cache_ts = float(data.get("profit_cache_ts") or saved_at)
+        self._last_market_cache_save_ts = saved_at
+        n = sum(len(self._open_cache.get(c, {})) for c in ("turbo", "binary"))
+        logger.info(
+            f"Caché de mercado restaurada desde BD: {n} activos, "
+            f"{len(self._profit_cache)} payouts."
+        )
+
+    def _save_market_cache_to_db(self) -> None:
+        now = time.time()
+        if self._last_market_cache_save_ts and now - self._last_market_cache_save_ts < 300:
+            return
+        n = sum(len(self._open_cache.get(c, {})) for c in ("turbo", "binary"))
+        if not n and not self._profit_cache:
+            return
+        payload = {
+            "saved_at": now,
+            "open_cache_ts": self._open_cache_ts,
+            "profit_cache_ts": self._profit_cache_ts,
+            "open_cache": self._open_cache,
+            "profit_cache": self._profit_cache,
+        }
+        self.db.set_setting("market_cache", json.dumps(payload))
+        self._last_market_cache_save_ts = now
 
     def get_config(self) -> dict:
         return dict(self.config)
@@ -349,6 +394,7 @@ class BotController:
                 self._profit_latency_ms = lat
             elif not self._profit_cache:
                 logger.warning("Snapshot de mercado sin payouts; se operará con fallback configurado si aplica.")
+            self._save_market_cache_to_db()
 
         opcode, to, _lat = results["opcode"]
         if not to and opcode:
@@ -464,13 +510,18 @@ class BotController:
                     if self._consume_recover_request():
                         self._recover_service()
                         continue
-                    # Filtra activos usando la caché (sin llamadas de red por activo):
-                    # deben existir (ACTIVES_OPCODE) y estar abiertos (init_v2).
+                    # Filtra activos usando la caché (sin llamadas de red por activo).
+                    # Si IQ no entregó snapshot de apertura todavía, no se bloquea
+                    # todo: se escanea en modo degradado y la orden/fallback confirma.
                     assets = self.db.get_assets()[: self.max_assets]
-                    active = [a for a in assets if self.asset_exists(a) and self.classify(a) == "open"]
+                    active = [a for a in assets if self._asset_scannable(a)]
                     skipped = [a for a in assets if a not in active]
                     if skipped:
                         logger.info(f"Activos omitidos (no abiertos): {', '.join(skipped)}")
+                    if active and not self._open_cache:
+                        logger.warning(
+                            "Sin snapshot de apertura; se escanean activos configurados en modo degradado."
+                        )
                     if active:
                         self.runner.scan_once(active, instrument_resolver=self.resolve_instrument,
                                               market_meta=self.market_meta)
@@ -572,11 +623,20 @@ class BotController:
           - 'closed'    -> existe pero está cerrado ahora
           - 'not_found' -> el nombre no existe en IQ Option (¿typo?)
           - 'otc_off'   -> es OTC pero ALLOW_OTC=false (se ignorará)
+          - 'degraded'  -> conectado, pero IQ no entregó snapshot de apertura
         payout: fracción 0-1 (o None si desconocido).
         """
         # Solo lee de la caché que mantiene el hilo de fondo (sin llamadas de red).
-        if not self.connected or not self._open_cache:
+        if not self.connected:
             return {a: {"status": "unknown", "payout": None} for a in assets}
+        if not self._open_cache:
+            return {
+                a: {
+                    "status": "degraded" if self.asset_exists(a) else "not_found",
+                    "payout": self._cached_payout(a),
+                }
+                for a in assets
+            }
         return {a: {"status": self.classify(a),
                     "payout": self._cached_payout(a)} for a in assets}
 
@@ -587,6 +647,14 @@ class BotController:
         if asset.upper().endswith("OTC") and not self.config["allow_otc"]:
             return "otc_off"
         return self.client.classify_asset(asset, self._open_cache)
+
+    def _asset_scannable(self, asset: str) -> bool:
+        if not self.asset_exists(asset):
+            return False
+        status = self.classify(asset)
+        if status == "open":
+            return True
+        return status == "unknown" and self.connected and not self._open_cache
 
     def market_meta(self) -> dict:
         """Frescura de las cachés de mercado y latencia de su última lectura, para
@@ -647,7 +715,7 @@ class BotController:
         """
         if not self.asset_exists(asset):
             return False, "not_found"
-        if self.classify(asset) != "open":
+        if not self._asset_scannable(asset):
             return False, "closed"
         payout = self.client.payout_from(asset, self._profit_cache)
         if payout < self.config["min_payout"]:
