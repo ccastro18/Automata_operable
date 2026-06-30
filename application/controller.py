@@ -318,32 +318,37 @@ class BotController:
         if not force and now - self._market_cache_ts < 10:
             return
 
-        # Las 4 lecturas van EN PARALELO (antes era en cadena: hasta ~50s si todas
+        # Las lecturas van EN PARALELO (antes era en cadena: hasta ~50s si todas
         # iban lentas, bloqueando el hilo de trading). Cada dato es INDEPENDIENTE: si
         # uno se cuelga/falla, NO borra los demás (se conserva el último valor bueno).
+        # Apertura y payouts salen de un solo snapshot para no saturar el websocket
+        # con dos initialization requests simultáneos.
         results = _gather([
-            ("open", self.client.get_open_times, 15),
-            ("profit", self.client.get_profits, 15),
+            ("market", self.client.get_market_snapshot, 18),
             ("opcode", self.client.get_actives_opcode, 10),
             ("balance", self.client.get_balance, 10),
         ])
         fetched_at = time.time()
 
-        open_times, to, lat = results["open"]
+        market, to, lat = results["market"]
         if to:
-            logger.warning("get_open_times() (init_v2) tardó demasiado; se conserva el valor previo.")
-        elif open_times:
-            self._open_cache = open_times
-            self._open_cache_ts = fetched_at
-            self._open_latency_ms = lat
-
-        profits, to, lat = results["profit"]
-        if to:
-            logger.warning("get_all_profit() tardó demasiado; se conservan los payouts previos.")
-        elif profits:
-            self._profit_cache = profits
-            self._profit_cache_ts = fetched_at
-            self._profit_latency_ms = lat
+            logger.warning("Snapshot de mercado tardó demasiado; se conserva el valor previo.")
+        elif isinstance(market, dict):
+            open_times = market.get("open_times") or {}
+            profits = market.get("profits") or {}
+            open_count = sum(len(open_times.get(c, {})) for c in ("turbo", "binary"))
+            if open_count:
+                self._open_cache = open_times
+                self._open_cache_ts = fetched_at
+                self._open_latency_ms = lat
+            elif not self._open_cache:
+                logger.warning("Snapshot de mercado sin activos; se espera el siguiente refresh.")
+            if profits:
+                self._profit_cache = profits
+                self._profit_cache_ts = fetched_at
+                self._profit_latency_ms = lat
+            elif not self._profit_cache:
+                logger.warning("Snapshot de mercado sin payouts; se operará con fallback configurado si aplica.")
 
         opcode, to, _lat = results["opcode"]
         if not to and opcode:

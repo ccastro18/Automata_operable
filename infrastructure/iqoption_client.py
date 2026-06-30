@@ -261,11 +261,41 @@ class IQOptionClient:
             if commission is None:
                 continue
             try:
-                payout = (100.0 - float(commission)) / 100.0
+                payout = float(commission)
             except (TypeError, ValueError):
+                continue
+            if payout > 1:
+                payout /= 100.0
+            if payout <= 0:
                 continue
             result.setdefault(name, {})[kind] = payout
         return result
+
+    @staticmethod
+    def _open_times_count(open_times: dict) -> int:
+        return sum(len(open_times.get(kind, {})) for kind in ("turbo", "binary"))
+
+    def get_market_snapshot(self) -> dict:
+        """Snapshot único de mercado para apertura y payout.
+
+        `initialization-data` suele ser más estable que `api_option_init_all`.
+        Si no trae payouts, se intenta `api_option_init_all` solo como fallback
+        corto para no dejar el refresh normal dependiendo de esa llamada.
+        """
+        init_v2 = self._request_init_v2()
+        open_times = self._open_times_from_init(init_v2)
+        profits = self._profits_from_init(init_v2)
+
+        if self._open_times_count(open_times) and profits:
+            return {"open_times": open_times, "profits": profits}
+
+        init_all = self._request_init_all(timeout=4.0)
+        if not self._open_times_count(open_times):
+            open_times = self._open_times_from_init(init_all)
+        if not profits:
+            profits = self._profits_from_init(init_all)
+
+        return {"open_times": open_times, "profits": profits}
 
     def get_candles(self, asset: str, interval: int, count: int,
                     endtime: float | None = None,
@@ -406,7 +436,11 @@ class IQOptionClient:
 
     def get_profits(self) -> dict:
         """Payouts turbo/binary sin usar el busy-wait de stable_api.get_all_profit()."""
-        return self._profits_from_init(self._request_init_all())
+        init_v2 = self._request_init_v2()
+        profits = self._profits_from_init(init_v2)
+        if profits:
+            return profits
+        return self._profits_from_init(self._request_init_all(timeout=4.0))
 
     @staticmethod
     def payout_from(asset: str, profits: dict) -> float:
