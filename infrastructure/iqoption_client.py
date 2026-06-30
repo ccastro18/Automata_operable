@@ -115,11 +115,49 @@ class IQOptionClient:
             )
         logger.success(f"Cuenta forzada a PRACTICE. Balance demo: {self.get_balance()}")
 
-    def current_mode(self) -> str:
-        try:
-            return str(self._api.get_balance_mode()).upper()
-        except Exception:  # noqa: BLE001 - algunas versiones no exponen el método
+    def current_mode(self, timeout: float = 6.0) -> str:
+        """Modo de cuenta SIN el busy-wait de get_profile_ansyc().
+
+        BLINDAJE: get_balance_mode() -> get_profile_ansyc() hace
+        `while profile.msg == None: pass`. Aquí leemos profile.msg (poblado en el
+        login) con espera acotada por sleeps.
+
+        Seguridad: si la cuenta activa se identifica con un tipo conocido se
+        devuelve REAL/PRACTICE/TOURNAMENT real. Si profile.msg no está disponible
+        (login aún en curso / versión sin el campo) se asume PRACTICE, igual que
+        el fallback histórico. Pero si SÍ hay perfil y aun así no se puede
+        determinar el tipo de la cuenta activa, se devuelve 'UNKNOWN' para que
+        ensure_practice/assert_practice aborten en vez de asumir DEMO.
+        """
+        import iqoptionapi.global_value as gv
+
+        raw = self._raw_api()
+        if raw is None:
             return self.PRACTICE
+        profile = getattr(raw, "profile", None)
+
+        msg = getattr(profile, "msg", None) if profile is not None else None
+        if not isinstance(msg, dict):
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                msg = getattr(profile, "msg", None) if profile is not None else None
+                if isinstance(msg, dict):
+                    break
+                time.sleep(0.05)
+
+        if not isinstance(msg, dict):
+            # Sin perfil: comportamiento histórico (asumir PRACTICE).
+            return self.PRACTICE
+
+        types = {1: "REAL", 4: self.PRACTICE, 2: "TOURNAMENT"}
+        try:
+            for b in msg.get("balances", []) or []:
+                if b.get("id") == gv.balance_id:
+                    return types.get(b.get("type"), "UNKNOWN")
+        except Exception:  # noqa: BLE001
+            return "UNKNOWN"
+        # Hay perfil pero no se encontró la cuenta activa: no asumir DEMO.
+        return "UNKNOWN"
 
     def assert_practice(self) -> None:
         """Se llama justo antes de cada compra real."""
@@ -622,11 +660,44 @@ class IQOptionClient:
             return pos.get("msg")
         return None
 
-    def get_balance(self) -> float:
-        try:
-            return float(self._api.get_balance())
-        except Exception:  # noqa: BLE001
+    def get_balance(self, timeout: float = 8.0) -> float:
+        """Balance demo SIN el busy-wait de stable_api.get_balances().
+
+        BLINDAJE: stable_api.get_balances() hace `while balances_raw == None: pass`
+        (gira al 100% de un núcleo si el websocket queda mudo, p.ej. tras un corte
+        de WiFi, y congela todo el bot por el GIL). Aquí pedimos el snapshot a la
+        capa cruda y lo esperamos con sleeps + timeout, igual que get_candles.
+        Devuelve 0.0 si no llega a tiempo y marca el socket para reconexión.
+        """
+        import iqoptionapi.global_value as gv
+
+        raw = self._raw_api()
+        if raw is None:
             return 0.0
+        try:
+            raw.balances_raw = None
+            raw.get_balances()  # dispara la request; el handler rellena balances_raw
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"get_balance() no pudo solicitar balances: {exc}")
+            return 0.0
+
+        data, timed_out = self._wait_for_attr("balances_raw", timeout)
+        if timed_out:
+            try:
+                raw.balances_raw = {}  # neutraliza un writer tardío
+            except Exception:  # noqa: BLE001
+                pass
+            self._ws_reconnect_required = True
+            logger.warning(f"get_balance() TIMEOUT ({timeout:.0f}s) -> 0.0")
+            return 0.0
+
+        try:
+            for b in (data or {}).get("msg", []) or []:
+                if b.get("id") == gv.balance_id:
+                    return float(b.get("amount") or 0.0)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"get_balance() no pudo interpretar balances: {exc}")
+        return 0.0
 
     # ------------------------------------------------------------------ #
     #  Operación
