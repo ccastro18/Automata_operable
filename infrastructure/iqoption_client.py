@@ -52,6 +52,7 @@ class IQOptionClient:
         self._allow_real = allow_real
         self._api = None  # instancia de IQ_Option
         self._candle_timeouts = 0  # timeouts de velas consecutivos (watchdog)
+        self._ws_lock = threading.Lock()
 
     # ------------------------------------------------------------------ #
     #  Conexión
@@ -127,6 +128,43 @@ class IQOptionClient:
     def _raw_api(self):
         return getattr(self._api, "api", None)
 
+    def _ensure_ws_connected(self) -> bool:
+        """Verifica/reconecta el websocket antes de pedir snapshots de mercado."""
+        if self._api is None:
+            return False
+        try:
+            if self._api.check_connect():
+                return True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"No se pudo verificar websocket IQ Option: {exc}")
+
+        with self._ws_lock:
+            try:
+                if self._api.check_connect():
+                    return True
+            except Exception:  # noqa: BLE001
+                pass
+
+            try:
+                logger.warning("Websocket IQ Option no conectado; se intenta reconectar antes del refresh de mercado.")
+                check, reason = self._api.connect()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"Reconexión websocket IQ Option falló: {exc}")
+                return False
+
+            if not check:
+                logger.warning(f"Reconexión websocket IQ Option rechazada: {reason}")
+                return False
+
+            try:
+                self._api.change_balance(self.PRACTICE)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"No se pudo reafirmar cuenta PRACTICE tras reconectar: {exc}")
+                return False
+            time.sleep(0.5)
+            logger.success("Websocket IQ Option reconectado para refresh de mercado.")
+            return True
+
     def _wait_for_attr(self, attr: str, timeout: float):
         raw = self._raw_api()
         if raw is None:
@@ -141,6 +179,8 @@ class IQOptionClient:
 
     def _request_init_v2(self, timeout: float = _INIT_TIMEOUT) -> dict:
         """Lee initialization-data v2 sin usar el busy-wait de stable_api."""
+        if not self._ensure_ws_connected():
+            return {}
         raw = self._raw_api()
         if raw is None:
             return {}
@@ -164,6 +204,8 @@ class IQOptionClient:
 
     def _request_init_all(self, timeout: float = _INIT_TIMEOUT) -> dict:
         """Lee api_option_init_all sin el bucle activo de stable_api.get_all_init()."""
+        if not self._ensure_ws_connected():
+            return {}
         raw = self._raw_api()
         if raw is None:
             return {}
