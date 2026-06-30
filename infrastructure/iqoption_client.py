@@ -55,6 +55,7 @@ class IQOptionClient:
         self._ws_lock = threading.Lock()
         self._ws_reconnect_required = False
         self._last_init_v2_timed_out = False
+        self._rebuild_required = False
 
     # ------------------------------------------------------------------ #
     #  Conexión
@@ -68,6 +69,10 @@ class IQOptionClient:
         check, reason = self._api.connect()
         if not check:
             raise RuntimeError(f"No se pudo conectar a IQ Option: {reason}")
+        self._candle_timeouts = 0
+        self._ws_reconnect_required = False
+        self._last_init_v2_timed_out = False
+        self._rebuild_required = False
         patched_count = apply_active_id_patch()
         logger.info(f"IDs de activos iqoptionapi actualizados localmente: {patched_count}.")
         logger.success("Conectado a IQ Option.")
@@ -129,6 +134,15 @@ class IQOptionClient:
     # ------------------------------------------------------------------ #
     def _raw_api(self):
         return getattr(self._api, "api", None)
+
+    def needs_rebuild(self) -> bool:
+        return self._rebuild_required
+
+    def _mark_rebuild_required(self, reason: str) -> None:
+        if not self._rebuild_required:
+            logger.error(f"Cliente IQ Option requiere reconstrucción: {reason}")
+        self._rebuild_required = True
+        self._ws_reconnect_required = True
 
     def _ensure_ws_connected(self) -> bool:
         """Verifica/reconecta el websocket antes de pedir snapshots de mercado."""
@@ -323,34 +337,81 @@ class IQOptionClient:
 
     def _get_candles_guarded(self, asset, interval, count, endtime,
                              timeout: float) -> list[dict]:
-        try:
-            candles, timed_out = _run_with_timeout(
-                lambda: self._api.get_candles(asset, interval, count, endtime), timeout
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(f"get_candles({asset}) excepción: {exc}")
+        if self._rebuild_required:
+            logger.warning(f"get_candles({asset}) omitido: cliente IQ pendiente de reconstrucción.")
             return []
 
+        candles, timed_out = self._request_candles_raw(asset, interval, count, endtime, timeout)
+
         if timed_out:
-            # 1) Liberar el hilo huérfano: su bucle es `while ...candles_data == None: pass`.
-            #    Poniendo candles_data a un valor no-None, la condición se rompe y el
-            #    hilo daemon termina en vez de seguir girando al 100% de CPU.
-            try:
-                self._api.candles.candles_data = []
-            except Exception:  # noqa: BLE001
-                pass
             self._candle_timeouts += 1
             logger.warning(
                 f"get_candles({asset}) TIMEOUT duro ({timeout:.0f}s) "
                 f"[{self._candle_timeouts}/{self._CANDLE_TIMEOUT_RECONNECT}] -> sin velas."
             )
-            # 2) Si se acumulan, el socket está mudo: reconectar para auto-sanar.
+            # Si se acumulan, el socket está mudo. No llamamos stable_api.connect()
+            # aquí: esa librería también reconecta desde hilos internos y corrompe
+            # la sesión. El controlador reconstruye el cliente completo.
             if self._candle_timeouts >= self._CANDLE_TIMEOUT_RECONNECT:
-                self._reconnect_after_stall()
+                self._mark_rebuild_required("timeouts consecutivos leyendo velas")
+                self._candle_timeouts = 0
             return []
 
         self._candle_timeouts = 0  # respondió: el socket está vivo
         return candles or []
+
+    def _request_candles_raw(self, asset, interval, count, endtime, timeout: float):
+        if not self._ensure_ws_connected():
+            self._mark_rebuild_required("websocket no disponible antes de pedir velas")
+            return [], True
+
+        raw = self._raw_api()
+        if raw is None:
+            self._mark_rebuild_required("API cruda no disponible antes de pedir velas")
+            return [], True
+
+        try:
+            active_id = (self._api.get_all_ACTIVES_OPCODE() or {}).get(asset)
+        except Exception:  # noqa: BLE001
+            active_id = None
+        if active_id is None:
+            logger.warning(f"get_candles({asset}) activo no encontrado en catálogo.")
+            return [], False
+
+        msg = {
+            "name": "get-candles",
+            "version": "2.0",
+            "body": {
+                "active_id": int(active_id),
+                "split_normalization": True,
+                "size": interval,
+                "to": int(endtime),
+                "count": count,
+                "": active_id,
+            },
+        }
+
+        try:
+            raw.candles.candles_data = None
+            raw.send_websocket_request("sendMessage", msg, no_force_send=False)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"get_candles({asset}) no pudo enviar solicitud websocket: {exc}")
+            self._mark_rebuild_required("falló el envío websocket de velas")
+            return [], False
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            data = raw.candles.candles_data
+            if data is not None:
+                return data if isinstance(data, list) else [], False
+            time.sleep(0.05)
+
+        try:
+            raw.candles.candles_data = []
+        except Exception:  # noqa: BLE001
+            pass
+        self._ws_reconnect_required = True
+        return [], True
 
     def _reconnect_after_stall(self) -> None:
         """Reconecta el websocket cuando se detecta que quedó mudo (varios

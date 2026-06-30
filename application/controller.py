@@ -418,15 +418,19 @@ class BotController:
 
     def request_service_recover(self) -> dict:
         """Recrea cliente/runner y vuelve a conectar sin apagar la intención del bot."""
+        self._queue_service_recover()
+        logger.warning("Recuperación en caliente solicitada desde el panel.")
+        return {"ok": True, "queued": True}
+
+    def _queue_service_recover(self) -> bool:
         with self._control_lock:
             if self.recovering or self._recover_requested:
-                return {"ok": True, "queued": True}
+                return False
             if self.running or self._want_running or self.db.get_bot_enabled():
                 self._want_running = True
                 self.db.set_bot_enabled(True)
             self._recover_requested = True
-        logger.warning("Recuperación en caliente solicitada desde el panel.")
-        return {"ok": True, "queued": True}
+            return True
 
     def start(self) -> dict:
         """Enciende el bot. NO bloquea: si falta conectar, lo hará el hilo de
@@ -503,6 +507,10 @@ class BotController:
 
                 # 2) Conectado: refrescar caché y, si toca, escanear.
                 self._refresh_market()  # balance + payouts (cacheado ~10s)
+                if self.client.needs_rebuild():
+                    if self._queue_service_recover():
+                        logger.warning("Cliente IQ marcado para reconstrucción tras refresh de mercado.")
+                    continue
                 if self.running:
                     self._wait_for_next_candle()
                     if self._shutdown or not self.running:
@@ -525,6 +533,9 @@ class BotController:
                     if active:
                         self.runner.scan_once(active, instrument_resolver=self.resolve_instrument,
                                               market_meta=self.market_meta)
+                    if self.client.needs_rebuild():
+                        if self._queue_service_recover():
+                            logger.warning("Cliente IQ marcado para reconstrucción tras timeouts de velas.")
                 else:
                     time.sleep(2)
             except Exception as exc:  # noqa: BLE001
@@ -554,14 +565,10 @@ class BotController:
             self._recover_requested = False
             return True
 
-    def _clear_market_state(self) -> None:
-        self._open_cache = {}
-        self._profit_cache = {}
+    def _clear_connection_state(self) -> None:
         self._opcode_cache = {}
         self._balance = 0.0
         self._market_cache_ts = 0.0
-        self._open_cache_ts = 0.0
-        self._profit_cache_ts = 0.0
         self._open_latency_ms = None
         self._profit_latency_ms = None
 
@@ -578,7 +585,7 @@ class BotController:
             self.connecting = False
             self._connect_requested = False
             self._account_mode = None
-            self._clear_market_state()
+            self._clear_connection_state()
 
             if open_assets:
                 logger.warning(
