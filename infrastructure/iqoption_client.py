@@ -38,11 +38,15 @@ def _run_with_timeout(fn, timeout: float):
     return box.get("v"), False
 
 
+class IQOptionConnectionUnavailable(RuntimeError):
+    """La conexión actual no es confiable; el controlador debe reconstruirla."""
+
+
 class IQOptionClient:
     PRACTICE = "PRACTICE"
 
     # Tras esta cantidad de timeouts seguidos de velas, se asume que el websocket
-    # quedó mudo (TCP vivo pero sin datos) y se fuerza una reconexión.
+    # quedó mudo (TCP vivo pero sin datos) y se fuerza la reconstrucción del cliente.
     _CANDLE_TIMEOUT_RECONNECT = 3
     _INIT_TIMEOUT = 12.0
 
@@ -183,8 +187,10 @@ class IQOptionClient:
         self._ws_reconnect_required = True
 
     def _ensure_ws_connected(self) -> bool:
-        """Verifica/reconecta el websocket antes de pedir snapshots de mercado."""
+        """Verifica el websocket; si no es confiable, pide reconstruir el cliente."""
         if self._api is None:
+            return False
+        if self._rebuild_required:
             return False
         reconnect_required = self._ws_reconnect_required
         try:
@@ -193,33 +199,9 @@ class IQOptionClient:
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"No se pudo verificar websocket IQ Option: {exc}")
 
-        with self._ws_lock:
-            try:
-                if not self._ws_reconnect_required and self._api.check_connect():
-                    return True
-            except Exception:  # noqa: BLE001
-                pass
-
-            try:
-                logger.warning("Websocket IQ Option no responde bien; se intenta reconectar antes del refresh de mercado.")
-                check, reason = self._api.connect()
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(f"Reconexión websocket IQ Option falló: {exc}")
-                return False
-
-            if not check:
-                logger.warning(f"Reconexión websocket IQ Option rechazada: {reason}")
-                return False
-
-            try:
-                self._api.change_balance(self.PRACTICE)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(f"No se pudo reafirmar cuenta PRACTICE tras reconectar: {exc}")
-                return False
-            time.sleep(0.5)
-            self._ws_reconnect_required = False
-            logger.success("Websocket IQ Option reconectado para refresh de mercado.")
-            return True
+        reason = "websocket marcado como no confiable" if reconnect_required else "websocket no responde a check_connect"
+        self._mark_rebuild_required(reason)
+        return False
 
     def _wait_for_attr(self, attr: str, timeout: float):
         raw = self._raw_api()
@@ -256,8 +238,8 @@ class IQOptionClient:
             except Exception:  # noqa: BLE001
                 pass
             self._last_init_v2_timed_out = True
-            self._ws_reconnect_required = True
             logger.warning(f"get_api_option_init_all_v2() TIMEOUT ({timeout:.0f}s).")
+            self._mark_rebuild_required("timeout leyendo initialization-data v2")
             return {}
         self._ws_reconnect_required = False
         return data if isinstance(data, dict) else {}
@@ -281,8 +263,8 @@ class IQOptionClient:
                 raw.api_option_init_all_result = {}
             except Exception:  # noqa: BLE001
                 pass
-            self._ws_reconnect_required = True
             logger.warning(f"api_option_init_all() TIMEOUT ({timeout:.0f}s).")
+            self._mark_rebuild_required("timeout leyendo api_option_init_all")
             return {}
         self._ws_reconnect_required = False
         return data if isinstance(data, dict) else {}
@@ -743,8 +725,8 @@ class IQOptionClient:
 
     def _find_closed_option(self, target, fetch: int = 100):
         """Busca la orden en las operaciones cerradas (get_optioninfo)."""
-        data, timed_out = _run_with_timeout(lambda: self._api.get_optioninfo(fetch), 10)
-        if timed_out or not data:
+        data = self._request_optioninfo(fetch)
+        if not data:
             return None
         try:
             closed = data["msg"]["result"]["closed_options"]
@@ -758,6 +740,40 @@ class IQOptionClient:
             elif self._same_order_id(ids, target):
                 return o
         return None
+
+    def _request_optioninfo(self, fetch: int, timeout: float = 10.0) -> dict:
+        """Lee get_options sin el busy-wait de stable_api.get_optioninfo()."""
+        if self._rebuild_required:
+            raise IQOptionConnectionUnavailable("cliente IQ pendiente de reconstrucción")
+        if not self._ensure_ws_connected():
+            self._mark_rebuild_required("websocket no disponible antes de consultar resultado")
+            raise IQOptionConnectionUnavailable("websocket no disponible antes de consultar resultado")
+
+        raw = self._raw_api()
+        if raw is None:
+            self._mark_rebuild_required("API cruda no disponible antes de consultar resultado")
+            raise IQOptionConnectionUnavailable("API cruda no disponible antes de consultar resultado")
+
+        try:
+            with self._ws_lock:
+                raw.api_game_getoptions_result = None
+                raw.get_options(fetch)
+                data, timed_out = self._wait_for_attr("api_game_getoptions_result", timeout)
+        except Exception as exc:  # noqa: BLE001
+            self._mark_rebuild_required(f"falló consulta de resultado: {exc}")
+            raise IQOptionConnectionUnavailable(str(exc)) from exc
+
+        if timed_out:
+            try:
+                raw.api_game_getoptions_result = {}
+            except Exception:  # noqa: BLE001
+                pass
+            logger.warning(f"get_optioninfo() TIMEOUT ({timeout:.0f}s).")
+            self._mark_rebuild_required("timeout consultando resultado de operación")
+            raise IQOptionConnectionUnavailable("timeout consultando resultado de operación")
+
+        self._ws_reconnect_required = False
+        return data if isinstance(data, dict) else {}
 
     @staticmethod
     def _same_order_id(candidate, target) -> bool:

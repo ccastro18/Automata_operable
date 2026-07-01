@@ -26,7 +26,7 @@ from domain.models import (
 )
 from domain.outcomes import build_price_path, reconstruct_outcome
 from infrastructure.database import Database
-from infrastructure.iqoption_client import IQOptionClient
+from infrastructure.iqoption_client import IQOptionClient, IQOptionConnectionUnavailable
 
 
 def is_otc_asset(asset: str) -> bool:
@@ -237,18 +237,29 @@ class TradeExecutor:
         # Timeout = expiración + margen (la opción no puede cerrar antes de vencer).
         timeout = self.expiration_minutes * 60 + 120
         logger.info(f"[{asset}] resultado pendiente en BD; esperando cierre id={order_id} ({market_type}).")
+        keep_pending_for_recovery = False
         try:
             if market_type == "digital":
                 result, profit = self.client.check_result_digital(order_id, timeout=timeout)
             else:
                 result, profit = self.client.check_result(order_id, timeout=timeout)
             balance = self.client.get_balance()
+        except IQOptionConnectionUnavailable as exc:
+            result, profit, balance = TradeResult.PENDING.value, 0.0, ""
+            keep_pending_for_recovery = True
+            logger.warning(
+                f"[{asset}] no se pudo confirmar resultado id={order_id} por conexión IQ: {exc}. "
+                "La operación queda PENDING para resolverla tras reconstruir el cliente."
+            )
         except Exception as exc:  # noqa: BLE001
             result, profit, balance = TradeResult.ERROR.value, 0.0, 0.0
             logger.exception(f"[{asset}] error consultando resultado id={order_id}: {exc}")
 
         with self._lock:
             self.open_assets.discard(asset)
+
+        if keep_pending_for_recovery:
+            return
 
         try:
             self.db.update_trade_result(trade_id, result, profit, balance, order_id=order_id)
@@ -404,14 +415,20 @@ class TradeExecutor:
             except (TypeError, ValueError):
                 self.db.update_trade_result(tid, TradeResult.ERROR.value, 0.0, "")
                 continue
-            option = self.client._find_closed_option(target)
+            try:
+                option = self.client._find_closed_option(target)
+            except IQOptionConnectionUnavailable as exc:
+                logger.warning(
+                    f"[{asset}] pendiente real id={oid} no se pudo consultar por conexión IQ: {exc}. "
+                    "Se conserva como pending."
+                )
+                continue
             if option is not None:
                 result, profit = self.client._interpret_option(option)
                 self.db.update_trade_result(tid, result, profit, self.client.get_balance())
                 logger.info(f"[{asset}] pendiente real resuelto al iniciar -> {result}")
             else:
-                self.db.update_trade_result(tid, TradeResult.ERROR.value, 0.0, "")
-                logger.warning(f"[{asset}] pendiente real no hallado (id={oid}) -> error")
+                logger.warning(f"[{asset}] pendiente real no hallado todavía (id={oid}); se conserva pending.")
 
     def resolve_pending_paper(self) -> None:
         for row in self.db.get_pending_trades("paper"):
