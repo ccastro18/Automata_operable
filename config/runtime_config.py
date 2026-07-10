@@ -28,6 +28,10 @@ FIELDS: list[Field] = [
           "Duración de la opción binaria (turbo 1-5)."),
     Field("max_assets", "int", 1, 8, "Máx. activos a monitorear", "Operación",
           "Cuántos activos puedes seguir a la vez (1-8). Cada activo añade llamadas a la API por vela."),
+    Field("collect_multi_tf", "bool", None, None, "Recolectar M5/M15 en señal", "Operación",
+          "Al detectarse una señal accionable, además de las velas M1 se guardan M5/M15 "
+          "(trade_candle_snapshots/trade_market_snapshots) para el trend multi-timeframe. "
+          "Solo se pide en señal, nunca en cada ciclo de escaneo."),
 
     # --- Filtros de riesgo ---
     Field("min_payout", "float", 0, 1, "Payout mínimo", "Filtros de riesgo",
@@ -42,6 +46,14 @@ FIELDS: list[Field] = [
           "Si |ema50-ema200| < avg_range_20*factor => no opera."),
     Field("allow_otc", "bool", None, None, "Permitir OTC", "Filtros de riesgo",
           "Operar y listar activos OTC."),
+    Field("auto_asset_selection", "bool", None, None, "Selección automática de activos", "Filtros de riesgo",
+          "Si está activo, ignora la whitelist manual y el bot descubre solo los activos de mercado REAL "
+          "(no-OTC) abiertos con mejor payout. Recomendado: encendido (el proyecto pivotó a mercado real)."),
+    Field("asset_refresh_minutes", "int", 1, 120, "Frecuencia de rotación de activos (min)", "Filtros de riesgo",
+          "Cada cuántos minutos se recalcula la lista de activos automática (además de al conectar)."),
+    Field("otc_fallback", "bool", None, None, "Fallback a OTC si no hay mercado real abierto", "Filtros de riesgo",
+          "Solo aplica con selección automática activa. Si NO hay ningún activo real abierto (fin de semana), "
+          "permite operar OTC temporalmente. Por defecto apagado: el bot queda en idle en vez de operar OTC."),
     Field("allow_digital", "bool", None, None, "Operar digitales (no-OTC)", "Filtros de riesgo",
           "Si turbo/binary no tiene payout, intenta opción DIGITAL (útil para pares reales). Si falla, queda como paper."),
     Field("operate_without_payout", "bool", None, None, "Operar sin payout (binaria asumida)", "Filtros de riesgo",
@@ -51,15 +63,30 @@ FIELDS: list[Field] = [
 
     # --- Rechazos configurables ---
     Field("reject_low_payout", "bool", None, None, "Rechazar por payout bajo", "Rechazos configurables",
-          "Si está apagado, un payout bajo queda registrado como permitido por usuario."),
+          "Def ENCENDIDO (bloqueante): el payout bajo es una decisión ECONÓMICA (rentabilidad "
+          "de la operación), no una señal predictiva, así que no aplica el análisis 2026-07-10 "
+          "de los filtros de estrategia. Si está apagado, un payout bajo queda registrado como "
+          "permitido por usuario."),
     Field("reject_bb_squeeze", "bool", None, None, "Rechazar por squeeze Bollinger", "Rechazos configurables",
-          "Si está apagado, bb_squeeze queda registrado como permitido por usuario."),
+          "Análisis 2026-07-10: sin valor predictivo con n=4,700 (no sobrevive Bonferroni; "
+          "los trades bloqueados ganan igual que los permitidos). Se mantiene en LOG-ONLY "
+          "(def apagado): el filtro se sigue evaluando y registrando en trade_filter_evaluations "
+          "para seguir midiendo, pero ya no bloquea la señal."),
     Field("reject_giant_candle", "bool", None, None, "Rechazar por vela gigante", "Rechazos configurables",
-          "Si está apagado, giant_candle queda registrado como permitido por usuario."),
+          "Análisis 2026-07-10: sin valor predictivo con n=4,700 (no sobrevive Bonferroni; "
+          "los trades bloqueados ganan igual que los permitidos). Se mantiene en LOG-ONLY "
+          "(def apagado): el filtro se sigue evaluando y registrando en trade_filter_evaluations "
+          "para seguir midiendo, pero ya no bloquea la señal."),
     Field("reject_lateral_market", "bool", None, None, "Rechazar por mercado lateral", "Rechazos configurables",
-          "Si está apagado, lateral_market queda registrado como permitido por usuario."),
+          "Análisis 2026-07-10: sin valor predictivo con n=4,700 (no sobrevive Bonferroni; "
+          "los trades bloqueados ganan igual que los permitidos). Se mantiene en LOG-ONLY "
+          "(def apagado): el filtro se sigue evaluando y registrando en trade_filter_evaluations "
+          "para seguir midiendo, pero ya no bloquea la señal."),
     Field("reject_late_entry", "bool", None, None, "Rechazar por entrada tarde", "Rechazos configurables",
-          "Si está apagado, late_entry queda registrado como permitido por usuario."),
+          "Def ENCENDIDO (bloqueante): la entrada tardía es un problema de EJECUCIÓN "
+          "(el precio ya se movió), no de predicción de la señal, así que no aplica el "
+          "análisis 2026-07-10 de los filtros de estrategia. Si está apagado, late_entry "
+          "queda registrado como permitido por usuario."),
 
     # --- Gestión de riesgo (capa nueva, tras los filtros normales) ---
     Field("risk_mgmt_enabled", "bool", None, None, "Activar gestión de riesgo", "Gestión de riesgo",
@@ -112,19 +139,26 @@ def defaults_from_settings(s) -> dict:
         "base_amount": s.base_amount,
         "expiration_minutes": s.expiration_minutes,
         "max_assets": getattr(s, "max_assets", 4),
+        "collect_multi_tf": getattr(s, "collect_multi_tf", True),
         "min_payout": s.min_payout,
         "max_entry_delay_seconds": s.max_entry_delay_seconds,
         "squeeze_factor": s.squeeze_factor,
         "giant_candle_factor": s.giant_candle_factor,
         "lateral_factor": s.lateral_factor,
         "allow_otc": s.allow_otc,
+        "auto_asset_selection": getattr(s, "auto_asset_selection", True),
+        "asset_refresh_minutes": getattr(s, "asset_refresh_minutes", 15),
+        "otc_fallback": getattr(s, "otc_fallback", False),
         "allow_digital": True,
         "operate_without_payout": True,
         "assumed_payout": 0.85,
         "reject_low_payout": True,
-        "reject_bb_squeeze": True,
-        "reject_giant_candle": True,
-        "reject_lateral_market": True,
+        # bb_squeeze / giant_candle / lateral_market: LOG-ONLY por defecto desde
+        # 2026-07-10 (ver Field.help arriba y DICCIONARIO_DATOS.md). Se siguen
+        # evaluando y registrando en trade_filter_evaluations, pero no bloquean.
+        "reject_bb_squeeze": False,
+        "reject_giant_candle": False,
+        "reject_lateral_market": False,
         "reject_late_entry": True,
         "risk_mgmt_enabled": True,
         "risk_cooldown_losses": 2,

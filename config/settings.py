@@ -51,6 +51,10 @@ class Settings(BaseSettings):
     timeframe_seconds: int = 60
     candle_count: int = 400
     max_entry_delay_seconds: int = 10
+    # Al detectarse una señal accionable, además de las 60 M1 ya recolectadas,
+    # trae y persiste M5/M15 (trend multi-timeframe, fuente de verdad para ML
+    # futuro). Nunca se pide en cada ciclo de escaneo, solo en señal.
+    collect_multi_tf: bool = True
 
     # --- Filtros de estrategia ---
     min_payout: float = 0.80
@@ -76,6 +80,16 @@ class Settings(BaseSettings):
     # el split lo hace el validador de abajo.
     assets: Annotated[list[str], NoDecode] = ["EURUSD"]
     allow_otc: bool = False
+
+    # --- Selección automática de activos de mercado real (no-OTC) ---
+    # Con esto activo, la whitelist manual de `assets` se ignora: el bot
+    # descubre y rota los activos él solo (ver domain/asset_selection.py).
+    auto_asset_selection: bool = True
+    asset_refresh_minutes: int = 15
+    # Si NO hay ningún activo real abierto (fin de semana/festivo), por defecto
+    # el bot queda en idle (no opera OTC). Encender esto permite volver a OTC
+    # SOLO en ese caso concreto.
+    otc_fallback: bool = False
 
     # ------------------------------------------------------------------ #
     #  Validadores

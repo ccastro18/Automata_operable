@@ -94,11 +94,29 @@ class Database:
             # tolera que ya existan, p.ej. si dos arranques migran casi a la vez).
             self._add_columns_if_missing("trades", [
                 ("entry_price", "REAL"), ("updated_at", "TEXT"), ("market_type", "TEXT"),
+                # config_epoch: huella de la config vigente cuando se generó el trade
+                # (real o paper). Ver config/epoch.py::compute_config_epoch. Migración
+                # idempotente: BDs viejas quedan con config_epoch=NULL en filas previas
+                # (no se puede reconstruir retroactivamente qué config tenían).
+                ("config_epoch", "TEXT"),
             ])
+            # Índice sobre config_epoch (creado DESPUÉS de la migración de columna
+            # de arriba, porque en instalaciones nuevas la columna no existe en el
+            # CREATE TABLE inicial, solo tras _add_columns_if_missing).
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_trades_config_epoch ON trades(config_epoch)"
+            )
 
             # Tablas satélite de contexto de mercado (aditivas, no tocan trades).
             self._conn.executescript(SATELLITE_SCHEMA)
-            self._add_columns_if_missing("trade_outcomes", [("realized_payout", "REAL")])
+            self._add_columns_if_missing("trade_outcomes", [
+                ("realized_payout", "REAL"),
+                ("outcome_price_suspect", "INTEGER"),
+            ])
+            self._add_columns_if_missing("trade_api_context", [
+                ("api_latency_candles_m5_ms", "REAL"),
+                ("api_latency_candles_m15_ms", "REAL"),
+            ])
             self._conn.commit()
 
         # Backfill fuera del lock (usa métodos que lockean por su cuenta).
@@ -126,10 +144,16 @@ class Database:
     # ------------------------------------------------------------------ #
     #  Trades
     # ------------------------------------------------------------------ #
-    def insert_trade(self, kind: str, record: TradeRecord, entry_price: float | None = None) -> int:
+    def insert_trade(self, kind: str, record: TradeRecord, entry_price: float | None = None,
+                     config_epoch: str | None = None) -> int:
+        """config_epoch: huella de la config vigente al generar el trade (ver
+        config/epoch.py). Igual que entry_price/market_type, NO vive en
+        TradeRecord (no participa de ninguna decisión de dominio, es
+        metadato de auditoría), se pasa aparte y se persiste directo en la
+        columna homónima de `trades`."""
         row = record.to_row()
-        cols = ["kind"] + _TRADE_COLUMNS + ["entry_price"]
-        values = [kind] + [self._coerce(row[c]) for c in _TRADE_COLUMNS] + [entry_price]
+        cols = ["kind"] + _TRADE_COLUMNS + ["entry_price", "config_epoch"]
+        values = [kind] + [self._coerce(row[c]) for c in _TRADE_COLUMNS] + [entry_price, config_epoch]
         placeholders = ",".join("?" * len(cols))
         sql = f"INSERT INTO trades ({','.join(cols)}) VALUES ({placeholders})"
         cur = self._write(sql, values, f"insert trade_id={record.trade_id}")

@@ -93,6 +93,16 @@ class TradeLogContext:
     filter_rows: list = field(default_factory=list)   # trade_filter_evaluations
     risk_row: dict | None = None               # trade_risk_management
 
+    # Multi-timeframe (M5/M15): solo poblado cuando la señal fue accionable
+    # (ver SignalService/collect_multi_tf). extra_market_snapshots trae 0-2
+    # dicts (uno por timeframe_seconds=300/900); extra_candle_rows mapea
+    # {timeframe_seconds: [filas OHLCV]}; extra_api_latency_ms mapea
+    # {timeframe_seconds: milisegundos} para volcarlo en trade_api_context
+    # (api_latency_candles_m5_ms / _m15_ms). NUNCA afecta entry_delay.
+    extra_market_snapshots: list = field(default_factory=list)
+    extra_candle_rows: dict = field(default_factory=dict)
+    extra_api_latency_ms: dict = field(default_factory=dict)
+
 
 @dataclass
 class SignalResult:
@@ -106,6 +116,15 @@ class SignalResult:
     market_snapshot: dict | None = None
     candle_rows: list = field(default_factory=list)
     candle_fetch_ms: float | None = None
+
+    # Multi-timeframe (M5/M15), poblado SOLO cuando `signal.is_actionable` y
+    # `collect_multi_tf` está activo (ver SignalService._fetch_extra_timeframe).
+    # multi_tf_snapshots: 0-2 dicts (build_live_snapshot para 300/900).
+    # multi_tf_candle_rows: {timeframe_seconds: [filas OHLCV]}.
+    # multi_tf_latency_ms: {timeframe_seconds: ms} de cada fetch extra.
+    multi_tf_snapshots: list = field(default_factory=list)
+    multi_tf_candle_rows: dict = field(default_factory=dict)
+    multi_tf_latency_ms: dict = field(default_factory=dict)
 
 
 class TradeResult(str, Enum):

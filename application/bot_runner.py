@@ -122,4 +122,7 @@ class BotRunner:
             market_snapshot=result.market_snapshot,
             candle_rows=result.candle_rows,
             api_context=api_context,
+            extra_market_snapshots=result.multi_tf_snapshots,
+            extra_candle_rows=result.multi_tf_candle_rows,
+            extra_api_latency_ms=result.multi_tf_latency_ms,
         )

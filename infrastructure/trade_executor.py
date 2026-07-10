@@ -55,6 +55,7 @@ class TradeExecutor:
         amount: float,
         expiration_minutes: int,
         allow_digital: bool = True,
+        config_epoch: str = "",
     ):
         self.client = client
         self.db = db
@@ -62,6 +63,12 @@ class TradeExecutor:
         self.expiration_minutes = expiration_minutes
         # Si en una binaria asumida IQ rechaza la orden, ¿intentar digital antes de paper?
         self.allow_digital = allow_digital
+        # Huella de la config vigente (ver config/epoch.py). BotController la
+        # recalcula y la reasigna aquí mismo (self.executor.config_epoch = ...)
+        # cada vez que la config cambia en caliente, así todo insert_trade
+        # posterior a un cambio de config queda etiquetado con la época nueva
+        # sin necesidad de reconstruir el executor.
+        self.config_epoch = config_epoch
 
         self.open_assets: set[str] = set()
         self._pending_paper: list[PaperTrade] = []
@@ -98,7 +105,8 @@ class TradeExecutor:
             order_id="BUY_REQUESTED", result=TradeResult.PENDING.value, profit=0.0,
             balance_after="", valid_trade=True, reject_reason=decision.reject_reason,
         )
-        row_id = self.db.insert_trade("real", pending, entry_price=signal.close)
+        row_id = self.db.insert_trade("real", pending, entry_price=signal.close,
+                                      config_epoch=self.config_epoch)
         logger.info(
             f"[{asset}] intento REAL {action.upper()} registrado en BD "
             f"(row={row_id}, trade_id={trade_id}); enviando compra a IQ Option."
@@ -190,7 +198,8 @@ class TradeExecutor:
                 order_id=str(order_id), result=TradeResult.PENDING.value, profit=0.0,
                 balance_after="", valid_trade=True, reject_reason=decision.reject_reason,
             )
-            row_id = self.db.insert_trade("real", pending, entry_price=signal.close)
+            row_id = self.db.insert_trade("real", pending, entry_price=signal.close,
+                                          config_epoch=self.config_epoch)
 
             with self._lock:
                 self.open_assets.add(asset)
@@ -273,7 +282,8 @@ class TradeExecutor:
                 order_id=str(order_id), result=result, profit=profit,
                 balance_after=balance, valid_trade=True, reject_reason=decision.reject_reason,
             )
-            self.db.insert_trade("real", recovered, entry_price=signal.close)
+            self.db.insert_trade("real", recovered, entry_price=signal.close,
+                                 config_epoch=self.config_epoch)
         except Exception as exc:  # noqa: BLE001
             logger.exception(f"[{asset}] NO se pudo guardar el resultado en BD: {exc}")
             return
@@ -333,7 +343,8 @@ class TradeExecutor:
             order_id="VIRTUAL", result=TradeResult.PENDING.value, profit=0.0,
             balance_after="", valid_trade=False, reject_reason=reject_reason,
         )
-        row_id = self.db.insert_trade("paper", pending, entry_price=signal.close)
+        row_id = self.db.insert_trade("paper", pending, entry_price=signal.close,
+                                      config_epoch=self.config_epoch)
 
         # Logging satélite del contexto de la señal rechazada (best-effort).
         self._log_entry_context(paper.trade_id, log_ctx)
@@ -389,7 +400,8 @@ class TradeExecutor:
                 entry_time=p.entry_time, order_id="VIRTUAL", result=result, profit=profit,
                 balance_after="", valid_trade=False, reject_reason=p.decision.reject_reason,
             )
-            self.db.insert_trade("paper", recovered, entry_price=p.entry_price)
+            self.db.insert_trade("paper", recovered, entry_price=p.entry_price,
+                                 config_epoch=self.config_epoch)
         except Exception as exc:  # noqa: BLE001
             logger.exception(f"[{p.signal.asset}] NO se pudo guardar resultado paper en BD: {exc}")
             return
@@ -474,6 +486,9 @@ class TradeExecutor:
     # ------------------------------------------------------------------ #
     #  Logging satélite (best-effort: jamás propaga excepciones al trade)
     # ------------------------------------------------------------------ #
+    # Mapeo timeframe_seconds -> columna de latencia en trade_api_context.
+    _MULTI_TF_LATENCY_COLUMNS = {300: "api_latency_candles_m5_ms", 900: "api_latency_candles_m15_ms"}
+
     def _log_entry_context(self, trade_id: str, log_ctx: TradeLogContext | None) -> None:
         if log_ctx is None:
             return
@@ -483,17 +498,39 @@ class TradeExecutor:
         if log_ctx.candle_rows:
             self._safe(lambda: self.db.write_candle_snapshots(
                 trade_id, log_ctx.timeframe_seconds, log_ctx.candle_rows), trade_id, "candles")
+
+        # Multi-timeframe M5/M15 (best-effort, poblado solo en señal accionable
+        # por SignalService; ver domain/models.TradeLogContext). Nunca debe
+        # bloquear el registro del trade si alguna escritura falla.
+        for snap in (log_ctx.extra_market_snapshots or []):
+            tf = snap.get("timeframe_seconds")
+            self._safe(lambda snap=snap: self.db.write_market_snapshot(
+                {**snap, "trade_id": trade_id}), trade_id, f"market_snapshot tf={tf}")
+        for tf, rows in (log_ctx.extra_candle_rows or {}).items():
+            if not rows:
+                continue
+            self._safe(lambda tf=tf, rows=rows: self.db.write_candle_snapshots(
+                trade_id, tf, rows), trade_id, f"candles tf={tf}")
+
         if log_ctx.filter_rows:
             self._safe(lambda: self.db.write_filter_evaluations(
                 trade_id, log_ctx.filter_rows), trade_id, "filters")
         if log_ctx.risk_row:
             self._safe(lambda: self.db.write_risk_management(
                 {**log_ctx.risk_row, "trade_id": trade_id}), trade_id, "risk_mgmt")
-        if log_ctx.api_context:
+
+        # api_context: el propio (payout/latencias M1) + las latencias extra de
+        # M5/M15 (medidas en SignalService, NUNCA se mezclan con entry_delay).
+        api_context = dict(log_ctx.api_context or {})
+        for tf, ms in (log_ctx.extra_api_latency_ms or {}).items():
+            col = self._MULTI_TF_LATENCY_COLUMNS.get(tf)
+            if col:
+                api_context[col] = ms
+        if api_context:
             self._safe(lambda: self.db.write_api_context(
-                {**log_ctx.api_context, "trade_id": trade_id}), trade_id, "api_context")
+                {**api_context, "trade_id": trade_id}), trade_id, "api_context")
             # Espeja el tipo de instrumento en la propia tabla trades (consulta fácil).
-            mt = log_ctx.api_context.get("market_type")
+            mt = api_context.get("market_type")
             if mt:
                 self._safe(lambda: self.db.update_trade_market_type(trade_id, mt),
                            trade_id, "market_type")

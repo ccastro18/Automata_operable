@@ -57,6 +57,15 @@ class IQOptionClient:
         self._api = None  # instancia de IQ_Option
         self._candle_timeouts = 0  # timeouts de velas consecutivos (watchdog)
         self._ws_lock = threading.Lock()
+        # BLINDAJE anti-corrupción de precio (ver _request_candles_raw): la
+        # librería expone `raw.candles.candles_data` como UN ÚNICO atributo
+        # compartido por TODOS los activos e hilos (no hay id de correlación
+        # por request). Sin este lock, dos fetches concurrentes de activos
+        # distintos (p.ej. el escaneo de un activo mientras un hilo en
+        # background resuelve el cierre de otro trade) pueden pisarse: un
+        # hilo lee la respuesta que llegó para OTRO activo. Eso corrompía
+        # exit_price/MFE/MAE/price_path con la escala de precio equivocada.
+        self._candles_lock = threading.Lock()
         self._ws_reconnect_required = False
         self._last_init_v2_timed_out = False
         self._rebuild_required = False
@@ -411,27 +420,31 @@ class IQOptionClient:
             },
         }
 
-        try:
-            raw.candles.candles_data = None
-            raw.send_websocket_request("sendMessage", msg, no_force_send=False)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(f"get_candles({asset}) no pudo enviar solicitud websocket: {exc}")
-            self._mark_rebuild_required("falló el envío websocket de velas")
-            return [], False
+        # Serializa TODO el ciclo pedir->esperar->leer: es la única forma segura
+        # de garantizar que el hilo lea SU PROPIA respuesta y no la de un
+        # fetch concurrente de otro activo (ver comentario del lock en __init__).
+        with self._candles_lock:
+            try:
+                raw.candles.candles_data = None
+                raw.send_websocket_request("sendMessage", msg, no_force_send=False)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"get_candles({asset}) no pudo enviar solicitud websocket: {exc}")
+                self._mark_rebuild_required("falló el envío websocket de velas")
+                return [], False
 
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            data = raw.candles.candles_data
-            if data is not None:
-                return data if isinstance(data, list) else [], False
-            time.sleep(0.05)
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                data = raw.candles.candles_data
+                if data is not None:
+                    return data if isinstance(data, list) else [], False
+                time.sleep(0.05)
 
-        try:
-            raw.candles.candles_data = []
-        except Exception:  # noqa: BLE001
-            pass
-        self._ws_reconnect_required = True
-        return [], True
+            try:
+                raw.candles.candles_data = []
+            except Exception:  # noqa: BLE001
+                pass
+            self._ws_reconnect_required = True
+            return [], True
 
     def _reconnect_after_stall(self) -> None:
         """Reconecta el websocket cuando se detecta que quedó mudo (varios

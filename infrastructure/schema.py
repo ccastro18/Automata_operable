@@ -146,6 +146,8 @@ CREATE TABLE IF NOT EXISTS trade_api_context (
     profit_cache_age_seconds    REAL,
 
     api_latency_candles_ms      REAL,
+    api_latency_candles_m5_ms   REAL,   -- fetch M5 (300s), solo en señal accionable
+    api_latency_candles_m15_ms  REAL,   -- fetch M15 (900s), solo en señal accionable
     api_latency_profit_ms       REAL,
     api_latency_open_time_ms    REAL,
     api_latency_buy_ms          REAL,
@@ -204,6 +206,10 @@ CREATE TABLE IF NOT EXISTS trade_outcomes (
     close_time               TEXT,
     result_source            TEXT,          -- check_win_v3, check_win_v2, virtual, reconstructed
     realized_payout          REAL,          -- payout real derivado del profit en un WIN (profit/amount)
+    -- 1 = exit_price detectado como corrupto (escala de OTRO activo, bug de
+    -- condición de carrera en get_candles) y anulado por tools/repair_exit_prices.py.
+    -- result/profit NUNCA se tocan: vienen de la API y son correctos.
+    outcome_price_suspect    INTEGER,
     created_at               TEXT NOT NULL,
 
     FOREIGN KEY (trade_id) REFERENCES trades(trade_id)

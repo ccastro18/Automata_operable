@@ -5,6 +5,14 @@ open, high, low, close, timestamp) y devuelve un Signal (CALL/PUT/NONE).
 
 Replica el script de IQ Option / Quadcode:
   - EMA 50 / 200, RSI 14, Bollinger 20x2, Fibonacci sobre swing de 25 velas.
+
+2026-07-10: análisis de 4,700 trades OTC -> WR 50.9%, sin señal predictiva en
+M1; la estrategia se mantiene SIN CAMBIOS como generador de datos durante el
+pivote a mercado real (no hay evidencia para re-parametrizarla, y hacerlo
+ahora contaminaría el dataset nuevo). Cualquier cambio futuro de sus
+parámetros (ema_fast, ema_slow, rsi_period, bb_period, bb_mult,
+fib_lookback) debe pasar por config_epoch (ver config/epoch.py) para poder
+segmentar el análisis por época de configuración.
 """
 from __future__ import annotations
 

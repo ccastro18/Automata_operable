@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from datetime import datetime
 
 from loguru import logger
 
@@ -17,7 +18,9 @@ from application.bot_runner import BotRunner
 from application.signal_service import SignalService
 from application.trade_service import TradeService
 from config import runtime_config
+from config.epoch import compute_config_epoch
 from config.settings import Settings
+from domain.asset_selection import RankedAsset, diff_selection, select_real_assets
 from domain.risk import RiskEngine
 from domain.risk_management import RiskManager
 from domain.strategy import FibPullbackStrategy
@@ -114,7 +117,10 @@ def build_runner(
     )
     repo = CandleRepository(client, settings.timeframe_seconds)
     strategy = _build_strategy(cfg)
-    signal_service = SignalService(repo, strategy, settings.candle_count)
+    signal_service = SignalService(
+        repo, strategy, settings.candle_count,
+        collect_multi_tf=settings.collect_multi_tf,
+    )
     risk = RiskEngine(
         min_payout=cfg["min_payout"],
         squeeze_factor=cfg["squeeze_factor"],
@@ -127,6 +133,11 @@ def build_runner(
         reject_lateral_market=cfg["reject_lateral_market"],
         reject_late_entry=cfg["reject_late_entry"],
     )
+    # config_epoch vigente para esta config (ver config/epoch.py). Se recalcula
+    # aquí (fuente única de verdad: se deriva de `cfg`) y también en caliente
+    # en BotController._apply_config() cada vez que la config cambia desde el
+    # panel, sin pasar por build_runner de nuevo.
+    config_epoch = compute_config_epoch(cfg)
     if executor is None:
         executor = TradeExecutor(
             client=client,
@@ -134,6 +145,7 @@ def build_runner(
             amount=cfg["base_amount"],
             expiration_minutes=cfg["expiration_minutes"],
             allow_digital=cfg["allow_digital"],
+            config_epoch=config_epoch,
         )
     else:
         # Conserva open_assets y paper-trades pendientes al reconstruir la conexión.
@@ -141,6 +153,7 @@ def build_runner(
         executor.amount = cfg["base_amount"]
         executor.expiration_minutes = cfg["expiration_minutes"]
         executor.allow_digital = cfg["allow_digital"]
+        executor.config_epoch = config_epoch
     risk_manager = RiskManager(
         enabled=cfg["risk_mgmt_enabled"],
         cooldown_losses=cfg["risk_cooldown_losses"],
@@ -173,6 +186,11 @@ class BotController:
         # Config editable: defaults del .env, sobrescritos por lo guardado en BD.
         self.config = runtime_config.defaults_from_settings(settings)
         self._load_config_from_db()
+        # config_epoch vigente (ver config/epoch.py). build_runner() calcula el
+        # suyo propio a partir de self.config (misma función pura, mismo
+        # resultado); se guarda también aquí para exponerlo en status() sin
+        # tener que ir a buscar el executor.
+        self.config_epoch = compute_config_epoch(self.config)
 
         self.runner, self.client, self.executor = build_runner(settings, db, self.config)
 
@@ -211,9 +229,20 @@ class BotController:
         self._profit_latency_ms: float | None = None
         self._last_market_cache_save_ts: float = 0.0
 
+        # Selección automática de activos de mercado REAL (no-OTC). Cuando
+        # config["auto_asset_selection"] está activo, esta selección
+        # reemplaza la whitelist manual (self.db.set_assets(...) se sobre-
+        # escribe en cada rotación; ver _refresh_asset_selection()).
+        self._auto_selection: list[str] = []
+        self._auto_selection_ts: float = 0.0
+        self._otc_fallback_active: bool = False
+        self._asset_wait_logged_ts: float = 0.0   # throttle: "esperando snapshot"
+        self._asset_idle_logged_ts: float = 0.0   # throttle: "sin mercado real abierto"
+
         # Inicializa la lista de activos desde el .env si la BD está vacía.
         self.db.init_assets_if_empty(self.settings.assets[: self.max_assets])
         self._load_market_cache_from_db()
+        self._load_auto_selection_from_db()
 
     # ------------------------------------------------------------------ #
     #  Configuración editable
@@ -276,6 +305,146 @@ class BotController:
         self.db.set_setting("market_cache", json.dumps(payload))
         self._last_market_cache_save_ts = now
 
+    # ------------------------------------------------------------------ #
+    #  Selección automática de activos de mercado REAL (no-OTC)
+    # ------------------------------------------------------------------ #
+    def _load_auto_selection_from_db(self) -> None:
+        """Restaura al arrancar la última selección conocida (solo para que
+        el panel/estado no arranquen vacíos); se recalcula igual al conectar."""
+        saved = self.db.get_setting("auto_asset_selection_state")
+        if not saved:
+            return
+        try:
+            data = json.loads(saved)
+        except json.JSONDecodeError:
+            return
+        assets = data.get("assets")
+        if isinstance(assets, list):
+            self._auto_selection = [str(a) for a in assets]
+        self._otc_fallback_active = bool(data.get("otc_fallback_active", False))
+        if self._auto_selection:
+            logger.info(
+                f"Selección automática de activos restaurada desde BD: {self._auto_selection}"
+            )
+
+    def _persist_auto_selection(self, ranked: list[RankedAsset], reason: str) -> None:
+        payload = {
+            "ts": time.time(),
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "reason": reason,  # real | otc_fallback | idle
+            "otc_fallback_active": self._otc_fallback_active,
+            "assets": [r.asset for r in ranked],
+            "detail": [
+                {"asset": r.asset, "payout": r.payout, "market_type": r.market_type,
+                 "is_otc": r.is_otc}
+                for r in ranked
+            ],
+        }
+        try:
+            self.db.set_setting("auto_asset_selection_state", json.dumps(payload))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"No se pudo persistir la selección automática de activos: {exc}")
+
+    def _refresh_asset_selection(self, force: bool = False) -> None:
+        """Descubre/rota los activos de mercado REAL (no-OTC) a operar.
+
+        Se llama SOLO desde el hilo de fondo, cada `asset_refresh_minutes` (o
+        al conectar con force=True). NO golpea la API directamente: usa la
+        caché de mercado (self._open_cache / self._profit_cache) que ya
+        mantiene _refresh_market() vía get_market_snapshot().
+
+        DECISIÓN DE DISEÑO: la consigna original pedía usar
+        stable_api.get_all_open_time(), pero IQOptionClient.get_open_times()
+        ya documenta por qué NO se usa ese método (lanza 3 hilos, incluida una
+        suscripción digital por websocket, y puede colgarse >30s). En su lugar
+        se reutiliza el snapshot rápido (~2s, get_api_option_init_all_v2) que
+        el controlador ya refresca cada ciclo con caché de 10s. Así se cumple
+        el espíritu del requisito ("no llamar la vía pesada por ciclo") sin
+        reintroducir el cuelgue conocido en la Pi.
+        """
+        if not self.config.get("auto_asset_selection", True):
+            self._otc_fallback_active = False
+            return
+        if not self.connected:
+            return
+
+        now = time.time()
+        interval = max(1, int(self.config.get("asset_refresh_minutes") or 15)) * 60
+
+        if not self._open_cache:
+            # Sin snapshot de apertura todavía (recién conectado / falló el
+            # último refresh): se conserva la última selección conocida y no
+            # se marca el timestamp, para reintentar barato en el próximo
+            # ciclo en vez de esperar el intervalo completo. No hay llamadas
+            # de red aquí, solo se reintenta leer la caché ya existente.
+            if now - self._asset_wait_logged_ts >= 60:
+                logger.warning(
+                    "Selección automática: sin snapshot de apertura todavía; "
+                    "se conserva la selección vigente y se reintenta en el próximo ciclo."
+                )
+                self._asset_wait_logged_ts = now
+            return
+
+        if not force and self._auto_selection_ts and now - self._auto_selection_ts < interval:
+            return
+
+        try:
+            ranked = select_real_assets(
+                self._open_cache, self._profit_cache,
+                min_payout=self.config["min_payout"], max_assets=self.max_assets,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                f"Selección automática de activos falló ({exc}); se conserva la selección vigente."
+            )
+            self._auto_selection_ts = now
+            return
+
+        reason = "real"
+        self._otc_fallback_active = False
+        if not ranked and self.config.get("otc_fallback", False):
+            try:
+                fallback = select_real_assets(
+                    self._open_cache, self._profit_cache,
+                    min_payout=self.config["min_payout"], max_assets=self.max_assets,
+                    include_otc=True,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception(f"Selección automática (fallback OTC) falló: {exc}")
+                fallback = []
+            if fallback:
+                ranked = fallback
+                reason = "otc_fallback"
+                self._otc_fallback_active = True
+                logger.warning(
+                    "Sin activos de mercado REAL abiertos; OTC_FALLBACK activo: "
+                    f"operando OTC temporalmente -> {[r.asset for r in ranked]}"
+                )
+
+        new_list = [r.asset for r in ranked]
+
+        if not new_list:
+            reason = "idle"
+            if now - self._asset_idle_logged_ts >= interval:
+                logger.info(
+                    "Sin activos de mercado REAL abiertos (fin de semana/festivo o payout "
+                    f"insuficiente). Bot en IDLE explícito: no se opera. "
+                    f"Próxima revisión en {interval // 60} min."
+                )
+                self._asset_idle_logged_ts = now
+        else:
+            entered, left = diff_selection(self._auto_selection, new_list)
+            if entered or left:
+                logger.info(
+                    f"Rotación de activos ({reason}): entran={entered or '-'} "
+                    f"salen={left or '-'} -> vigentes={new_list}"
+                )
+
+        self._auto_selection = new_list
+        self._auto_selection_ts = now
+        self.db.set_assets(new_list, max_assets=self.max_assets)
+        self._persist_auto_selection(ranked, reason)
+
     def get_config(self) -> dict:
         return dict(self.config)
 
@@ -286,6 +455,12 @@ class BotController:
             if k in cfg:
                 cfg[k] = runtime_config.coerce(k, v)  # ValueError -> 400 en el endpoint
         self.config = cfg
+        # Recalcula el epoch ANTES de _apply_config() para que el executor ya
+        # quede etiquetado con la época nueva antes de que pueda registrarse
+        # ningún trade con esta config. Es el único punto de recálculo en
+        # caliente: cualquier cambio de config pasa por aquí (endpoint
+        # /api/config -> BotController.update_config).
+        self.config_epoch = compute_config_epoch(cfg)
         self.db.set_setting("config", json.dumps(cfg))
         self._apply_config()
         logger.info(f"Configuración actualizada: {cfg}")
@@ -297,6 +472,9 @@ class BotController:
         self.executor.amount = c["base_amount"]
         self.executor.expiration_minutes = c["expiration_minutes"]
         self.executor.allow_digital = c["allow_digital"]
+        # config_epoch vigente: se lee de self.config_epoch (ya recalculado en
+        # update_config) para que quede en un único lugar la fuente de verdad.
+        self.executor.config_epoch = self.config_epoch
         risk = self.runner.trade_service.risk
         risk.min_payout = c["min_payout"]
         risk.squeeze_factor = c["squeeze_factor"]
@@ -490,6 +668,9 @@ class BotController:
                         # no bloquea el panel) para que los activos no salgan
                         # "desconocido".
                         self._refresh_market(force=True)
+                        # Descubrir activos de mercado real YA al conectar (no
+                        # esperar el intervalo de rotación).
+                        self._refresh_asset_selection(force=True)
                         # Resolver operaciones que quedaron 'pending' (p.ej. la app
                         # se cerró antes de obtener el resultado).
                         try:
@@ -507,6 +688,7 @@ class BotController:
 
                 # 2) Conectado: refrescar caché y, si toca, escanear.
                 self._refresh_market()  # balance + payouts (cacheado ~10s)
+                self._refresh_asset_selection()  # rota activos cada asset_refresh_minutes
                 if self.client.needs_rebuild():
                     if self._queue_service_recover():
                         logger.warning("Cliente IQ marcado para reconstrucción tras refresh de mercado.")
@@ -651,7 +833,10 @@ class BotController:
         """Estado de un activo usando SOLO la caché (sin red)."""
         if not self.connected or not self._open_cache:
             return "unknown"
-        if asset.upper().endswith("OTC") and not self.config["allow_otc"]:
+        # OTC permitido si el usuario lo activó a mano (allow_otc) o si la
+        # selección automática entró en OTC_FALLBACK (sin mercado real abierto).
+        otc_allowed = self.config["allow_otc"] or self._otc_fallback_active
+        if asset.upper().endswith("OTC") and not otc_allowed:
             return "otc_off"
         return self.client.classify_asset(asset, self._open_cache)
 
@@ -784,5 +969,10 @@ class BotController:
             "expiration_minutes": self.config["expiration_minutes"],
             "min_payout": self.config["min_payout"],
             "allow_otc": self.config["allow_otc"],
+            "auto_asset_selection": self.config.get("auto_asset_selection", True),
+            "asset_refresh_minutes": self.config.get("asset_refresh_minutes", 15),
+            "otc_fallback": self.config.get("otc_fallback", False),
+            "otc_fallback_active": self._otc_fallback_active,
             "last_error": self.last_error,
+            "config_epoch": self.config_epoch,
         }
