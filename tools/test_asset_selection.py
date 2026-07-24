@@ -124,6 +124,21 @@ class SelectRealAssetsTests(unittest.TestCase):
         ranked = select_real_assets(open_times, profits, min_payout=0.0, max_assets=8)
         self.assertAlmostEqual(ranked[0].payout, 0.85)
 
+    def test_universe_excluye_nombre_promocional_sin_opcode(self):
+        open_times = _open_times(turbo={"Bitcoin/Gold": True, "EURUSD": True})
+        profits = {
+            "Bitcoin/Gold": {"turbo": 0.90},
+            "EURUSD": {"turbo": 0.85},
+        }
+        ranked = select_real_assets(
+            open_times,
+            profits,
+            min_payout=0.0,
+            max_assets=8,
+            universe={"EURUSD"},
+        )
+        self.assertEqual([r.asset for r in ranked], ["EURUSD"])
+
 
 class IsOtcNameTests(unittest.TestCase):
     def test_variantes_otc(self):

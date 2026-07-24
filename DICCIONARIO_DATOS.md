@@ -1,16 +1,22 @@
 # Diccionario de datos — Bot IqOption
 
-> Última actualización: 2026-06-29 · BD: `~/.local/share/iqbot/bot.db` (SQLite, WAL) · 9 tablas
+> Última actualización: 2026-07-24 · BD: `~/.local/share/iqbot/bot.db` (SQLite, WAL) · 10 tablas
 
 ---
 
 ## 1. Origen y uso de los datos (panorama)
 
-**Qué es esto.** El bot opera la estrategia **FibPullback** sobre **velas de 1 minuto** (`TIMEFRAME_SECONDS=60`) con **expiración de 5 minutos**, en **cuenta DEMO/PRACTICE** de IQ Option. Estamos en **fase de recolección**: el objetivo es acumular contexto de mercado y resultados para analizar, no optimizar la estrategia todavía.
+**Qué es esto.** La BD conserva el histórico retirado de **FibPullback** y,
+desde 2026-07-24, el forward test de **Confirmed Band Reversion** sobre velas
+de 1 minuto y expiración de 5 minutos en cuenta DEMO/PRACTICE. El
+`config_epoch` evita mezclar las dos estrategias.
 
 **Ciclo de un dato (de dónde sale cada fila):**
 1. El controlador refresca caché de mercado (apertura de activos, payouts, balance) desde la API de IQ.
-2. Por cada activo activo: se piden velas → la estrategia (`FibPullbackStrategy`) calcula indicadores (EMA 50/200, RSI 14, Bollinger 20×2, Fibonacci sobre swing de 25 velas) y emite **CALL / PUT / NONE**.
+2. Por cada activo se piden velas → `ConfirmedBandReversionStrategy` calcula
+   Bollinger, RSI, ATR, ADX y rechazo de mecha; emite CALL/PUT/NONE.
+   Independientemente del resultado, escribe el embudo de condiciones en
+   `strategy_evaluations`.
 3. Si la señal es accionable, el **motor de riesgo** (`RiskEngine`) aplica los filtros de "no operar".
    - **Rechazada** → **paper-trade** (`kind='paper'`, `valid_trade=0`): NO se envía a IQ, pero se **sigue virtualmente** con el precio para registrar qué habría pasado. → esto es lo que permite el **análisis contrafactual** de los filtros.
    - **Aprobada** → pasa a la **capa de gestión de riesgo** (`RiskManager`, paso 3b).
@@ -22,12 +28,13 @@
 
 **Clave de relación:** `trades.trade_id` (TEXT, hash corto). Todas las satélite referencian `trade_id`. *(Las FOREIGN KEY se declaran como documentación; SQLite no las fuerza aquí — la integridad la mantiene el código.)*
 
-**Las 9 tablas:**
+**Las 10 tablas:**
 | Tabla | Filas/escala | Para qué sirve |
 |---|---|---|
 | `trades` | 1 por señal accionada | Operación base (decisión + indicadores resumidos + resultado) |
 | `trade_market_snapshots` | 1 por trade·timeframe | Foto técnica completa en el momento de la señal |
 | `trade_filter_evaluations` | ~5-8 por trade | 1 fila por filtro evaluado (normales + reglas de riesgo) |
+| `strategy_evaluations` | 1 por activo·vela·epoch | Condiciones y motivo de no señal, incluso sin trade |
 | `trade_candle_snapshots` | ~50 por trade | OHLCV crudo alrededor de la señal (reconstrucción visual) |
 | `trade_price_path` | varias por trade | Recorrido del precio durante la operación |
 | `trade_api_context` | 1 por trade | Estado de la API/caché al disparar (latencias, frescura, payout) |
@@ -99,10 +106,26 @@ Origen: `build_live_snapshot()` a partir del DataFrame de indicadores en la señ
 | `fib_position` | Posición del precio en el rango de Fibonacci (0–1) |
 | `distance_to_fib_382/500/618` | Distancia a los niveles de Fibonacci |
 | `candle_range`, `avg_range_20`, `candle_range_ratio` | Rango de la vela, medio de 20, y su cociente (>1 = vela grande) |
+| `atr_14`, `adx_14`, `range_atr_ratio` | Volatilidad Wilder, fuerza de tendencia y tamaño de vela normalizado |
 | `body_size`, `body_ratio` | Tamaño del cuerpo y cuerpo/rango |
 | `upper_wick_ratio`, `lower_wick_ratio` | Proporción de las mechas superior/inferior |
 | `trend_label` | `bullish` / `bearish` / `lateral` (etiqueta derivada) |
 | `source` | `live` (en vivo) o `backfill` (migrado de `trades`) |
+
+---
+
+## 3b. Tabla `strategy_evaluations` (embudo de señal)
+
+Se escribe una fila por activo y vela cerrada aunque la decisión sea `NONE`.
+La clave única `(asset, timeframe_seconds, candle_timestamp, config_epoch)`
+evita duplicar una vela después de una reconexión.
+
+| Grupo | Columnas | Qué permite diagnosticar |
+|---|---|---|
+| Identidad | `strategy_revision`, `config_epoch`, `candidate_direction`, `signal_direction` | No mezclar reglas o parámetros distintos |
+| Decisión | `actionable`, `rejection_reason` | Motivo exacto de señal/no señal |
+| Condiciones | `band_reentry`, `candle_confirm`, `rsi_extreme`, `rsi_turn`, `wick_confirm`, `adx_ok`, `range_atr_ok` | Qué umbral está eliminando candidatos |
+| Valores | `rsi`, `prev_rsi`, `adx`, `atr`, `range_atr_ratio`, mechas, bandas y cierre | Recalibrar con los valores reales, no por intuición |
 
 ---
 
@@ -374,6 +397,46 @@ Evidencia en la BD copia (`/sessions/.../mnt/outputs/bot.sqlite`, análisis ad-h
 
 ---
 
+## Cambios 2026-07-24 — pivote a Confirmed Band Reversion
+
+La base `bot_20260724_104711.sqlite` contiene 3,506 operaciones no-OTC
+resueltas: 47.67% WR, payout promedio aproximado 0.833, breakeven 54.57% y
+EV de −12.54% del stake por operación. El resultado es negativo en 11 de 12
+días y no cambia de signo al separar real/paper, dirección, activos, alineación
+multi-timeframe ni horizontes cercanos.
+
+La búsqueda de sustitutas dejó dos controles obligatorios:
+
+1. Las 64,790 velas M1 únicas reconstruidas desde
+   `trade_candle_snapshots` **no son una muestra continua independiente**.
+   Cada ventana se guardó porque después apareció una señal FibPullback. Una
+   reversión Bollinger aparentemente positiva mostró +74% EV a 1–5 minutos de
+   la próxima señal histórica, pero −23% a −27% al alejarse 16–60 minutos:
+   fuga de futuro confirmada.
+2. La variante `lateral_market < 0.25`, evaluable sobre señales realmente
+   observadas, tampoco es estable: +40.96% EV en desarrollo, −20.53% en
+   validación (20–22 jul) y +36.79% en holdout. Es una racha de régimen, no
+   una regla repetible.
+
+Decisión de código:
+
+- `BotController` construye `ConfirmedBandReversionStrategy`; la clase
+  `FibPullbackStrategy` queda solo para reproducibilidad.
+- La estrategia nueva no usa Fibonacci. Exige reingreso Bollinger, vela y
+  mecha de rechazo, giro desde RSI extremo, ADX moderado y rango acotado por
+  ATR. Sus umbrales se aplican en caliente desde el panel.
+- El bot vuelve a poder encenderse y restaurar su estado anterior, siempre con
+  los seguros de cuenta PRACTICE.
+- `strategy_evaluations` registra también las velas `NONE`, condición por
+  condición. Esto permite medir si un campo está demasiado estricto antes de
+  cambiarlo.
+- Los snapshots de trades incorporan `atr_14`, `adx_14` y
+  `range_atr_ratio`.
+- `config_epoch` incorpora
+  `STRATEGY_REVISION=confirmed_band_reversion_v1` y todos sus parámetros.
+- Al migrar una configuración FibPullback guardada se preservan opciones del
+  usuario, pero se fija expiración 5M y payout mínimo no inferior a 0.82.
+
 ## Cambios 2026-07-10 — Filtros log-only y config_epoch
 
 Cierre del análisis estadístico de ~4,700 trades: **ningún filtro de estrategia** (`bb_squeeze`, `giant_candle`, `lateral_market`, `late_entry`, `low_payout`) sobrevive corrección de Bonferroni — los trades bloqueados ganan igual que los permitidos. La gestión de riesgo (cooldown por pérdidas consecutivas) mostró señal débil pero en dirección útil (bloqueados 47.3% WR vs permitidos 52.1% WR, p=0.032 sin corregir) → se conserva sin cambios. Dos consecuencias de diseño:
@@ -389,10 +452,12 @@ Cierre del análisis estadístico de ~4,700 trades: **ningún filtro de estrateg
 Cada cambio de configuración (indicadores, umbrales, rechazos activos/log-only, gestión de riesgo) fragmenta el dataset: mezclar trades de configuraciones distintas en un mismo análisis de filtro/estrategia contamina el resultado. Se añade `config_epoch` (TEXT) a `trades`, una huella corta que identifica la configuración vigente cuando se generó cada trade (real o paper).
 
 - **`config/epoch.py`** (módulo nuevo): `compute_config_epoch(config: dict) -> str`, función pura. Hash `sha256` truncado a 12 hex de un subconjunto **ordenado y fijo** de claves (`EPOCH_KEYS`, ver docstring del módulo), serializado con `json.dumps(..., sort_keys=True)` — el orden de las claves en el dict de entrada es irrelevante, una clave ausente se trata como `None` (no lanza `KeyError`), y cualquier cambio de valor en una clave incluida cambia el hash.
-  - Claves incluidas: `ema_fast`, `ema_slow`, `rsi_period`, `bb_period`, `bb_mult`, `fib_lookback` (estrategia); `squeeze_factor`, `giant_candle_factor`, `lateral_factor`, `expiration_minutes`, `min_payout`, `allow_otc`, `otc_fallback`, `auto_asset_selection` (umbrales/operación); `reject_low_payout`, `reject_bb_squeeze`, `reject_giant_candle`, `reject_lateral_market`, `reject_late_entry` (rechazos configurables); `risk_mgmt_enabled`, `risk_cooldown_losses`, `risk_cooldown_minutes`, `risk_window_start_hour`, `risk_window_end_hour`, `risk_window_max_losses` (gestión de riesgo); `max_entry_delay_seconds`, `collect_multi_tf` (ejecución/recolección).
+  - Claves incluidas: `rsi_period`, `bb_period`, `bb_mult`, `atr_period`, `adx_period`, `reversion_rsi_threshold`, `reversion_min_rsi_turn`, `reversion_min_wick_ratio`, `reversion_max_adx`, `reversion_max_range_atr` (estrategia activa); `ema_fast`, `ema_slow`, `fib_lookback` (contexto); `squeeze_factor`, `giant_candle_factor`, `lateral_factor`, `expiration_minutes`, `min_payout`, `allow_otc`, `otc_fallback`, `auto_asset_selection` (umbrales/operación); `reject_low_payout`, `reject_bb_squeeze`, `reject_giant_candle`, `reject_lateral_market`, `reject_late_entry` (rechazos configurables); `risk_mgmt_enabled`, `risk_cooldown_losses`, `risk_cooldown_minutes`, `risk_window_start_hour`, `risk_window_end_hour`, `risk_window_max_losses` (gestión de riesgo); `max_entry_delay_seconds`, `collect_multi_tf` (ejecución/recolección).
   - Claves deliberadamente EXCLUIDAS: `base_amount`, `max_assets`, `asset_refresh_minutes`, `allow_digital`, `operate_without_payout`, `assumed_payout`, `assets` — cambian cómo/cuánto se opera, no qué señal se genera ni si se acepta/rechaza.
 - **`infrastructure/schema.py` / `infrastructure/database.py`:** columna `trades.config_epoch TEXT`, migración idempotente vía `_add_columns_if_missing` (igual patrón que `entry_price`/`market_type`) + índice `idx_trades_config_epoch`. Filas anteriores a esta migración quedan con `config_epoch=NULL` (no se puede reconstruir retroactivamente qué config tenían). `Database.insert_trade()` gana el parámetro `config_epoch: str | None = None` (mismo tratamiento que `entry_price`: no vive en `TradeRecord`/`TradeRecord.COLUMNS` porque es metadato de auditoría, no un campo de dominio).
 - **`infrastructure/trade_executor.py`:** `TradeExecutor` gana el atributo `self.config_epoch` (constructor, default `""`), estampado en los 5 sitios donde se llama `db.insert_trade(...)` (real, real "compra primero", reinserciones de recuperación de real y de paper, y el registro normal de paper-trades).
 - **Dónde se recalcula en caliente (decisión de diseño):** en `application/controller.py`. `build_runner()` calcula `config_epoch = compute_config_epoch(cfg)` y lo pasa al construir/reconstruir el `TradeExecutor` (arranque y recuperación de servicio). `BotController` guarda además su propia copia en `self.config_epoch` (calculada en `__init__` y recalculada en `update_config()`, ANTES de llamar a `_apply_config()`), que expone en `status()`. `_apply_config()` — el método que ya aplicaba en caliente cada cambio de config a los objetos vivos (`risk.*`, `rm.*`, la estrategia) — ahora también hace `self.executor.config_epoch = self.config_epoch`. Se eligió enganchar aquí (en vez de, por ejemplo, recalcular el hash en cada `insert_trade`) porque es el ÚNICO punto por el que pasa cualquier cambio de configuración en caliente (el endpoint `/api/config` del panel llama a `BotController.update_config()`), y porque el hash es barato de calcular (una función pura sobre ~26 claves) frente a llamarlo por cada trade. El costo es aceptar que si algún día se muta `self.config` sin pasar por `update_config()`, el epoch quedaría desincronizado — no ocurre hoy: el único mutador de `self.config` fuera de `__init__` es `update_config()`.
 - **Panel (`application/controller.py::status()`):** nueva clave `config_epoch` con el valor vigente.
-- **Estrategia (`domain/strategy.py`):** nota de docstring — la `FibPullbackStrategy` no cambia (no hay evidencia para re-parametrizarla); cualquier cambio futuro de sus parámetros queda cubierto por `config_epoch` (ya están en `EPOCH_KEYS`).
+- **Estrategia (`domain/strategy.py`):** `FibPullbackStrategy` queda como
+  referencia histórica. El runtime actual usa
+  `ConfirmedBandReversionStrategy`.

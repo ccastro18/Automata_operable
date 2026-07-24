@@ -14,7 +14,7 @@ from loguru import logger
 
 from domain.market_snapshot import build_live_snapshot, _ts
 from domain.models import Direction, Signal, SignalResult
-from domain.strategy import FibPullbackStrategy
+from domain.strategy import ConfirmedBandReversionStrategy
 from infrastructure.candle_repository import CandleRepository
 
 # Velas OHLCV a guardar alrededor de la señal (reconstrucción visual del mercado).
@@ -27,7 +27,7 @@ _MULTI_TF_TIMEFRAMES: dict[int, int] = {300: 60, 900: 40}
 
 
 class SignalService:
-    def __init__(self, repo: CandleRepository, strategy: FibPullbackStrategy, candle_count: int,
+    def __init__(self, repo: CandleRepository, strategy: ConfirmedBandReversionStrategy, candle_count: int,
                  collect_multi_tf: bool = True):
         self.repo = repo
         self.strategy = strategy
@@ -57,6 +57,9 @@ class SignalService:
         # Un solo cálculo de indicadores, reutilizado para señal y snapshot.
         enriched = self.strategy.add_indicators(df).dropna()
         signal = self.strategy.signal_from_frame(asset, enriched)
+        strategy_evaluation = self.strategy.evaluation_from_frame(asset, enriched, signal)
+        if strategy_evaluation:
+            strategy_evaluation["timeframe_seconds"] = self.repo.timeframe_seconds
 
         last = df.iloc[-1]
         last_close = float(last["close"])
@@ -93,6 +96,7 @@ class SignalService:
             market_snapshot=snapshot,
             candle_rows=candle_rows,
             candle_fetch_ms=fetch_ms,
+            strategy_evaluation=strategy_evaluation,
             multi_tf_snapshots=multi_tf_snapshots,
             multi_tf_candle_rows=multi_tf_candle_rows,
             multi_tf_latency_ms=multi_tf_latency_ms,

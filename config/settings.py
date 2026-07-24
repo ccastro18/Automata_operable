@@ -57,7 +57,9 @@ class Settings(BaseSettings):
     collect_multi_tf: bool = True
 
     # --- Filtros de estrategia ---
-    min_payout: float = 0.80
+    # Con payout 0.82 el break-even teórico es 54.95%. Payouts inferiores
+    # exigen todavía más acierto y no son útiles para el forward test.
+    min_payout: float = 0.82
     squeeze_factor: float = 0.65
     giant_candle_factor: float = 2.2
     lateral_factor: float = 0.25

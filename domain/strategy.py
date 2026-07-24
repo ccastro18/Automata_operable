@@ -1,18 +1,12 @@
-"""Estrategia Fib Pullback 5M.
+"""Estrategias puras del dominio.
 
-NO sabe nada de IQ Option. Recibe un DataFrame de velas (con columnas
-open, high, low, close, timestamp) y devuelve un Signal (CALL/PUT/NONE).
+`FibPullbackStrategy` se conserva únicamente para reproducir y auditar el
+histórico. El runtime usa `ConfirmedBandReversionStrategy`: una estrategia
+experimental nueva de reversión de liquidez que exige confirmación después de
+un exceso en Bollinger, en vez de interpretar cualquier toque como entrada.
 
-Replica el script de IQ Option / Quadcode:
-  - EMA 50 / 200, RSI 14, Bollinger 20x2, Fibonacci sobre swing de 25 velas.
-
-2026-07-10: análisis de 4,700 trades OTC -> WR 50.9%, sin señal predictiva en
-M1; la estrategia se mantiene SIN CAMBIOS como generador de datos durante el
-pivote a mercado real (no hay evidencia para re-parametrizarla, y hacerlo
-ahora contaminaría el dataset nuevo). Cualquier cambio futuro de sus
-parámetros (ema_fast, ema_slow, rsi_period, bb_period, bb_mult,
-fib_lookback) debe pasar por config_epoch (ver config/epoch.py) para poder
-segmentar el análisis por época de configuración.
+NO sabe nada de IQ Option. Recibe un DataFrame de velas (open, high, low,
+close, timestamp) y devuelve un `Signal`.
 """
 from __future__ import annotations
 
@@ -25,6 +19,8 @@ from domain.models import Direction, Signal
 
 
 class FibPullbackStrategy:
+    """Implementación histórica, fuera de producción desde 2026-07-24."""
+
     def __init__(
         self,
         ema_fast: int = 50,
@@ -173,3 +169,291 @@ class FibPullbackStrategy:
             f"bb_width={c.bb_width:.4f} (med={c.bb_width_median:.4f}); "
             f"ema_dist={c.ema_distance:.5f}; rango={c['range']:.5f}; ctx={pos}"
         )
+
+
+class ConfirmedBandReversionStrategy(FibPullbackStrategy):
+    """Reversión experimental tras rechazo confirmado de una banda.
+
+    Una banda solo define un precio relativamente extremo; no basta para
+    operar. La entrada exige, en la misma vela cerrada o tras una vela fuera:
+
+    1. exceso y cierre de vuelta dentro de Bollinger 20x2;
+    2. vela y mecha de rechazo en la dirección de la reversión;
+    3. RSI previamente extremo y girando;
+    4. ADX moderado y rango no explosivo frente a ATR.
+
+    La estrategia es simétrica para CALL/PUT y no usa Fibonacci ni la
+    dirección de EMA50/EMA200 para decidir.
+    """
+
+    name = "confirmed_band_reversion_v1"
+    actionable = True
+    description = (
+        "Experimental: reingreso Bollinger + rechazo de mecha + giro RSI "
+        "+ régimen ADX/ATR; exclusivamente PRACTICE"
+    )
+
+    def __init__(
+        self,
+        ema_fast: int = 50,
+        ema_slow: int = 200,
+        rsi_period: int = 14,
+        bb_period: int = 20,
+        bb_mult: float = 2.0,
+        fib_lookback: int = 25,
+        squeeze_lookback: int = 100,
+        atr_period: int = 14,
+        adx_period: int = 14,
+        reversion_rsi_threshold: float = 35.0,
+        reversion_min_rsi_turn: float = 1.5,
+        reversion_min_wick_ratio: float = 0.25,
+        reversion_max_adx: float = 28.0,
+        reversion_max_range_atr: float = 1.8,
+    ):
+        super().__init__(
+            ema_fast=ema_fast,
+            ema_slow=ema_slow,
+            rsi_period=rsi_period,
+            bb_period=bb_period,
+            bb_mult=bb_mult,
+            fib_lookback=fib_lookback,
+            squeeze_lookback=squeeze_lookback,
+        )
+        self.atr_period = atr_period
+        self.adx_period = adx_period
+        self.reversion_rsi_threshold = reversion_rsi_threshold
+        self.reversion_min_rsi_turn = reversion_min_rsi_turn
+        self.reversion_min_wick_ratio = reversion_min_wick_ratio
+        self.reversion_max_adx = reversion_max_adx
+        self.reversion_max_range_atr = reversion_max_range_atr
+
+    def add_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        df = super().add_indicators(df)
+
+        # Bollinger define su formulación original con desviación poblacional.
+        df["bb_std"] = df["close"].rolling(self.bb_period).std(ddof=0)
+        df["bb_top"] = df["bb_mid"] + df["bb_std"] * self.bb_mult
+        df["bb_bottom"] = df["bb_mid"] - df["bb_std"] * self.bb_mult
+        df["bb_width"] = (df["bb_top"] - df["bb_bottom"]) / df["bb_mid"]
+        df["bb_width_median"] = df["bb_width"].rolling(self.squeeze_lookback).median()
+
+        prev_close = df["close"].shift(1)
+        true_range = pd.concat(
+            [
+                df["high"] - df["low"],
+                (df["high"] - prev_close).abs(),
+                (df["low"] - prev_close).abs(),
+            ],
+            axis=1,
+        ).max(axis=1)
+        df["atr"] = true_range.ewm(
+            alpha=1 / self.atr_period,
+            adjust=False,
+            min_periods=self.atr_period,
+        ).mean()
+
+        up_move = df["high"].diff()
+        down_move = -df["low"].diff()
+        plus_dm = pd.Series(
+            np.where((up_move > down_move) & (up_move > 0), up_move, 0.0),
+            index=df.index,
+        )
+        minus_dm = pd.Series(
+            np.where((down_move > up_move) & (down_move > 0), down_move, 0.0),
+            index=df.index,
+        )
+        adx_true_range = true_range.ewm(
+            alpha=1 / self.adx_period,
+            adjust=False,
+            min_periods=self.adx_period,
+        ).mean()
+        plus_di = 100 * plus_dm.ewm(
+            alpha=1 / self.adx_period,
+            adjust=False,
+            min_periods=self.adx_period,
+        ).mean() / adx_true_range.replace(0, np.nan)
+        minus_di = 100 * minus_dm.ewm(
+            alpha=1 / self.adx_period,
+            adjust=False,
+            min_periods=self.adx_period,
+        ).mean() / adx_true_range.replace(0, np.nan)
+        dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
+        df["adx"] = dx.ewm(
+            alpha=1 / self.adx_period,
+            adjust=False,
+            min_periods=self.adx_period,
+        ).mean()
+
+        safe_range = df["range"].replace(0, np.nan)
+        body = (df["close"] - df["open"]).abs()
+        upper_wick = df["high"] - df[["open", "close"]].max(axis=1)
+        lower_wick = df[["open", "close"]].min(axis=1) - df["low"]
+        df["body_ratio"] = body / safe_range
+        df["upper_wick_ratio"] = upper_wick.clip(lower=0) / safe_range
+        df["lower_wick_ratio"] = lower_wick.clip(lower=0) / safe_range
+        df["range_atr_ratio"] = df["range"] / df["atr"].replace(0, np.nan)
+
+        return df
+
+    @staticmethod
+    def _value(row, column: str) -> float:
+        try:
+            value = float(row.get(column, 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+        return 0.0 if np.isnan(value) else value
+
+    def _conditions(self, df: pd.DataFrame) -> dict:
+        if len(df) < 2:
+            return {
+                "candidate_direction": "none",
+                "rejection_reason": "not_enough_data",
+                "actionable": False,
+            }
+
+        c = df.iloc[-1]
+        p = df.iloc[-2]
+        call_band_reentry = (
+            (c.low <= c.bb_bottom or p.close < p.bb_bottom)
+            and c.close > c.bb_bottom
+        )
+        put_band_reentry = (
+            (c.high >= c.bb_top or p.close > p.bb_top)
+            and c.close < c.bb_top
+        )
+        ambiguous = call_band_reentry and put_band_reentry
+
+        adx_ok = c.adx <= self.reversion_max_adx
+        range_atr_ok = 0 < c.range_atr_ratio <= self.reversion_max_range_atr
+        call_checks = {
+            "band_reentry": call_band_reentry and not ambiguous,
+            "candle_confirm": c.close > c.open,
+            "rsi_extreme": p.rsi <= self.reversion_rsi_threshold and c.rsi <= 50,
+            "rsi_turn": c.rsi - p.rsi >= self.reversion_min_rsi_turn,
+            "wick_confirm": c.lower_wick_ratio >= self.reversion_min_wick_ratio,
+            "adx_ok": adx_ok,
+            "range_atr_ok": range_atr_ok,
+        }
+        put_checks = {
+            "band_reentry": put_band_reentry and not ambiguous,
+            "candle_confirm": c.close < c.open,
+            "rsi_extreme": p.rsi >= 100 - self.reversion_rsi_threshold and c.rsi >= 50,
+            "rsi_turn": p.rsi - c.rsi >= self.reversion_min_rsi_turn,
+            "wick_confirm": c.upper_wick_ratio >= self.reversion_min_wick_ratio,
+            "adx_ok": adx_ok,
+            "range_atr_ok": range_atr_ok,
+        }
+
+        if ambiguous:
+            candidate = "none"
+            checks = call_checks
+            rejection = "ambiguous_band_reentry"
+        elif call_band_reentry:
+            candidate = "call"
+            checks = call_checks
+            failed = [name for name, passed in checks.items() if not passed]
+            rejection = "" if not failed else "call:" + ",".join(failed)
+        elif put_band_reentry:
+            candidate = "put"
+            checks = put_checks
+            failed = [name for name, passed in checks.items() if not passed]
+            rejection = "" if not failed else "put:" + ",".join(failed)
+        else:
+            candidate = "none"
+            checks = {
+                "band_reentry": False,
+                "candle_confirm": False,
+                "rsi_extreme": False,
+                "rsi_turn": False,
+                "wick_confirm": False,
+                "adx_ok": adx_ok,
+                "range_atr_ok": range_atr_ok,
+            }
+            rejection = "no_band_reentry"
+
+        return {
+            "candidate_direction": candidate,
+            "rejection_reason": rejection,
+            "actionable": candidate in ("call", "put") and all(checks.values()),
+            **checks,
+            "rsi": self._value(c, "rsi"),
+            "prev_rsi": self._value(p, "rsi"),
+            "adx": self._value(c, "adx"),
+            "atr": self._value(c, "atr"),
+            "range_atr_ratio": self._value(c, "range_atr_ratio"),
+            "upper_wick_ratio": self._value(c, "upper_wick_ratio"),
+            "lower_wick_ratio": self._value(c, "lower_wick_ratio"),
+            "bb_top": self._value(c, "bb_top"),
+            "bb_bottom": self._value(c, "bb_bottom"),
+            "close": self._value(c, "close"),
+            "candle_timestamp": self._value(c, "timestamp"),
+        }
+
+    def signal_from_frame(self, asset: str, df: pd.DataFrame) -> Signal:
+        context = self._conditions(df)
+        if len(df) < 2:
+            return Signal(
+                asset=asset,
+                direction=Direction.NONE,
+                signal_time=datetime.now(),
+                strategy_reason="not_enough_data",
+                notes="confirmed_band_reversion: not_enough_data",
+            )
+
+        c = df.iloc[-1]
+        p = df.iloc[-2]
+        signal_time = (
+            datetime.fromtimestamp(c.timestamp)
+            if "timestamp" in df.columns
+            else datetime.now()
+        )
+
+        if context["actionable"] and context["candidate_direction"] == "call":
+            direction = Direction.CALL
+            reason = "confirmed_band_reversion_call"
+        elif context["actionable"] and context["candidate_direction"] == "put":
+            direction = Direction.PUT
+            reason = "confirmed_band_reversion_put"
+        else:
+            direction = Direction.NONE
+            reason = context["rejection_reason"] or "no_signal"
+
+        return Signal(
+            asset=asset,
+            direction=direction,
+            signal_time=signal_time,
+            strategy_reason=reason,
+            close=self._value(c, "close"),
+            rsi=self._value(c, "rsi"),
+            prev_rsi=self._value(p, "rsi"),
+            bb_width=self._value(c, "bb_width"),
+            bb_width_median=self._value(c, "bb_width_median"),
+            ema_distance=self._value(c, "ema_distance"),
+            candle_range=self._value(c, "range"),
+            avg_range_20=self._value(c, "avg_range_20"),
+            notes=(
+                f"strategy={self.name}; candidate={context['candidate_direction']}; "
+                f"rsi={context['rsi']:.2f}; prev_rsi={context['prev_rsi']:.2f}; "
+                f"adx={context['adx']:.2f}; atr={context['atr']:.6f}; "
+                f"range_atr={context['range_atr_ratio']:.3f}; "
+                f"wick_up={context['upper_wick_ratio']:.3f}; "
+                f"wick_down={context['lower_wick_ratio']:.3f}; "
+                f"decision={reason}"
+            ),
+        )
+
+    def evaluation_from_frame(self, asset: str, df: pd.DataFrame, signal: Signal) -> dict:
+        """Telemetría por activo/vela, incluso cuando no hubo entrada."""
+        context = self._conditions(df)
+        if len(df) < 2:
+            return {}
+        return {
+            **context,
+            "asset": asset,
+            "timeframe_seconds": 60,
+            "candle_timestamp": datetime.fromtimestamp(
+                context["candle_timestamp"]
+            ).strftime("%Y-%m-%d %H:%M:%S"),
+            "strategy_revision": self.name,
+            "signal_direction": signal.direction.value,
+        }

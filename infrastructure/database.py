@@ -109,6 +109,11 @@ class Database:
 
             # Tablas satélite de contexto de mercado (aditivas, no tocan trades).
             self._conn.executescript(SATELLITE_SCHEMA)
+            self._add_columns_if_missing("trade_market_snapshots", [
+                ("atr_14", "REAL"),
+                ("adx_14", "REAL"),
+                ("range_atr_ratio", "REAL"),
+            ])
             self._add_columns_if_missing("trade_outcomes", [
                 ("realized_payout", "REAL"),
                 ("outcome_price_suspect", "INTEGER"),
@@ -713,6 +718,27 @@ class Database:
                               f"filter {r.get('filter_name')} trade_id={trade_id}")
             n += 1
         return n
+
+    def write_strategy_evaluation(self, evaluation: dict) -> int:
+        """Registra una vela evaluada aunque no haya trade.
+
+        La clave única evita duplicados si una reconexión vuelve a escanear la
+        misma vela bajo el mismo config_epoch.
+        """
+        data = {"created_at": self._now(), **evaluation}
+        cols = list(data.keys())
+        placeholders = ",".join("?" * len(cols))
+        sql = (
+            f"INSERT OR IGNORE INTO strategy_evaluations "
+            f"({','.join(cols)}) VALUES ({placeholders})"
+        )
+        cur = self._write(
+            sql,
+            [self._coerce(data[c]) for c in cols],
+            f"strategy evaluation asset={data.get('asset')} "
+            f"candle={data.get('candle_timestamp')}",
+        )
+        return int(cur.lastrowid or 0)
 
     def write_candle_snapshots(self, trade_id: str, timeframe_seconds: int,
                                candles: list[dict]) -> int:

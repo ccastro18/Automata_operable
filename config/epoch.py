@@ -13,8 +13,13 @@ generó, así el análisis puede agrupar/filtrar por época sin ambigüedad.
 Claves incluidas en el hash (afectan qué señal se genera o si se acepta/
 rechaza; ver `config/runtime_config.py::FIELDS` para la definición de cada
 una):
-  - Estrategia (indicadores): ema_fast, ema_slow, rsi_period, bb_period,
-    bb_mult, fib_lookback
+  - Revisión fija del código de estrategia. Desde 2026-07-24 es
+    `confirmed_band_reversion_v1`.
+  - Estrategia: rsi_period, bb_period, bb_mult, atr_period, adx_period,
+    reversion_rsi_threshold, reversion_min_rsi_turn,
+    reversion_min_wick_ratio, reversion_max_adx,
+    reversion_max_range_atr
+  - Contexto diagnóstico: ema_fast, ema_slow, fib_lookback
   - Umbrales de filtros / operación: squeeze_factor, giant_candle_factor,
     lateral_factor, expiration_minutes, min_payout, allow_otc, otc_fallback,
     auto_asset_selection
@@ -38,13 +43,23 @@ from __future__ import annotations
 import hashlib
 import json
 
+# Cambiar este valor es obligatorio cuando cambia la lógica de generación de
+# señales. Así el epoch no depende solo de parámetros y nunca mezcla dos
+# implementaciones distintas que casualmente compartan la misma configuración.
+STRATEGY_REVISION = "confirmed_band_reversion_v1"
+
 # Orden EXPLÍCITO y estable: no depende del orden de iteración del dict de
 # entrada. Añadir una clave nueva aquí es un cambio deliberado (documentarlo
 # en este docstring) y automáticamente produce una nueva época para todo
 # trade posterior, aunque los VALORES no hayan cambiado.
 EPOCH_KEYS: tuple[str, ...] = (
     # Estrategia (indicadores)
-    "ema_fast", "ema_slow", "rsi_period", "bb_period", "bb_mult", "fib_lookback",
+    "rsi_period", "bb_period", "bb_mult", "atr_period", "adx_period",
+    "reversion_rsi_threshold", "reversion_min_rsi_turn",
+    "reversion_min_wick_ratio", "reversion_max_adx",
+    "reversion_max_range_atr",
+    # Contexto recolectado (cambiarlo fragmenta los snapshots comparables)
+    "ema_fast", "ema_slow", "fib_lookback",
     # Umbrales de filtros / operación
     "squeeze_factor", "giant_candle_factor", "lateral_factor",
     "expiration_minutes", "min_payout", "allow_otc", "otc_fallback",
@@ -78,6 +93,9 @@ def compute_config_epoch(config: dict) -> str:
         o para tests con dicts mínimos).
       - Pura: no lee reloj, red ni BD. Misma entrada -> misma salida siempre.
     """
-    subset = {k: config.get(k) for k in EPOCH_KEYS}
+    subset = {
+        "strategy_revision": STRATEGY_REVISION,
+        **{k: config.get(k) for k in EPOCH_KEYS},
+    }
     payload = json.dumps(subset, sort_keys=True, default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]

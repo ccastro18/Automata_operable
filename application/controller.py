@@ -23,7 +23,7 @@ from config.settings import Settings
 from domain.asset_selection import RankedAsset, diff_selection, select_real_assets
 from domain.risk import RiskEngine
 from domain.risk_management import RiskManager
-from domain.strategy import FibPullbackStrategy
+from domain.strategy import ConfirmedBandReversionStrategy
 from infrastructure.candle_repository import CandleRepository
 from infrastructure.database import Database
 from infrastructure.iqoption_client import IQOptionClient
@@ -97,10 +97,17 @@ def _gather(jobs: list[tuple]) -> dict:
     return out
 
 
-def _build_strategy(cfg: dict) -> FibPullbackStrategy:
-    return FibPullbackStrategy(
+def _build_strategy(cfg: dict) -> ConfirmedBandReversionStrategy:
+    """Construye la estrategia experimental activa."""
+    return ConfirmedBandReversionStrategy(
         ema_fast=cfg["ema_fast"], ema_slow=cfg["ema_slow"], rsi_period=cfg["rsi_period"],
         bb_period=cfg["bb_period"], bb_mult=cfg["bb_mult"], fib_lookback=cfg["fib_lookback"],
+        atr_period=cfg["atr_period"], adx_period=cfg["adx_period"],
+        reversion_rsi_threshold=cfg["reversion_rsi_threshold"],
+        reversion_min_rsi_turn=cfg["reversion_min_rsi_turn"],
+        reversion_min_wick_ratio=cfg["reversion_min_wick_ratio"],
+        reversion_max_adx=cfg["reversion_max_adx"],
+        reversion_max_range_atr=cfg["reversion_max_range_atr"],
     )
 
 
@@ -179,6 +186,11 @@ class BotController:
             v = self.MAX_ASSETS
         return max(1, min(v, 8))
 
+    @property
+    def strategy_actionable(self) -> bool:
+        """Única compuerta para encendido/restauración del motor de entradas."""
+        return bool(getattr(self.runner.signal_service.strategy, "actionable", True))
+
     def __init__(self, settings: Settings, db: Database):
         self.settings = settings
         self.db = db
@@ -255,12 +267,25 @@ class BotController:
             data = json.loads(saved)
         except json.JSONDecodeError:
             return
+        migrate_to_reversion = "reversion_rsi_threshold" not in data
         for k, v in data.items():
             if k in self.config:
                 try:
                     self.config[k] = runtime_config.coerce(k, v)
                 except ValueError:
                     pass  # ignora valores inválidos guardados
+        if migrate_to_reversion:
+            # Una configuración FibPullback guardada no debe sobrescribir los
+            # defaults económicos de la estrategia nueva.
+            self.config["min_payout"] = max(
+                0.82, float(self.config.get("min_payout") or 0.0)
+            )
+            self.config["expiration_minutes"] = 5
+            self.db.set_setting("config", json.dumps(self.config))
+            logger.info(
+                "Configuración migrada a Confirmed Band Reversion "
+                "(expiración=5m, payout mínimo>=0.82)."
+            )
 
     def _load_market_cache_from_db(self) -> None:
         saved = self.db.get_setting("market_cache")
@@ -392,6 +417,10 @@ class BotController:
             ranked = select_real_assets(
                 self._open_cache, self._profit_cache,
                 min_payout=self.config["min_payout"], max_assets=self.max_assets,
+                # El snapshot de mercado puede publicar nombres promocionales
+                # que no existen en ACTIVES_OPCODE. Sin este cruce ocupaban un
+                # slot y luego get_candles los rechazaba como not_found.
+                universe=set(self._opcode_cache) if self._opcode_cache else None,
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception(
@@ -408,6 +437,7 @@ class BotController:
                     self._open_cache, self._profit_cache,
                     min_payout=self.config["min_payout"], max_assets=self.max_assets,
                     include_otc=True,
+                    universe=set(self._opcode_cache) if self._opcode_cache else None,
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.exception(f"Selección automática (fallback OTC) falló: {exc}")
@@ -495,7 +525,7 @@ class BotController:
             rm.window_start_hour = c["risk_window_start_hour"]
             rm.window_end_hour = c["risk_window_end_hour"]
             rm.window_max_losses = c["risk_window_max_losses"]
-        # Reconstruye la estrategia con los nuevos parámetros de indicadores.
+        # Reconstruye la estrategia para aplicar sus parámetros en caliente.
         self.runner.signal_service.strategy = _build_strategy(c)
         # Si se bajó el límite de activos, recorta la lista persistida.
         self.db.set_assets(self.db.get_assets(), max_assets=self.max_assets)
@@ -757,7 +787,9 @@ class BotController:
     def _recover_service(self) -> None:
         """Recrea el cliente IQ y deja el bot listo para reconectar desde el loop."""
         self.recovering = True
-        keep_running = self._want_running or self.running or self.db.get_bot_enabled()
+        keep_running = (
+            self._want_running or self.running or self.db.get_bot_enabled()
+        )
         old_client = self.client
         open_assets = sorted(self.executor.open_assets)
         logger.warning("Iniciando recuperación en caliente del servicio interno.")
@@ -783,6 +815,9 @@ class BotController:
             if keep_running:
                 self._want_running = True
                 self.db.set_bot_enabled(True)
+            else:
+                self._want_running = False
+                self.db.set_bot_enabled(False)
             self._connect_requested = True
             self.last_error = None
             logger.success("Servicio interno reconstruido; la reconexión queda en cola.")
@@ -975,4 +1010,7 @@ class BotController:
             "otc_fallback_active": self._otc_fallback_active,
             "last_error": self.last_error,
             "config_epoch": self.config_epoch,
+            "strategy_name": self.runner.signal_service.strategy.name,
+            "strategy_actionable": self.strategy_actionable,
+            "strategy_reason": self.runner.signal_service.strategy.description,
         }

@@ -6,6 +6,7 @@ fuente de la operación base. Aquí viven las tablas que cuelgan de ella por
 
   - trade_market_snapshots  -> contexto técnico por timeframe (1M/5M/15M)
   - trade_filter_evaluations -> una fila por filtro evaluado (HARD/SOFT/INFO)
+  - strategy_evaluations     -> embudo de condiciones por activo/vela, aun sin trade
   - trade_candle_snapshots   -> OHLCV alrededor de la señal (reconstrucción visual)
   - trade_price_path         -> recorrido del precio durante la operación (fase 2)
   - trade_api_context        -> estado de la API en el momento de la señal
@@ -65,6 +66,9 @@ CREATE TABLE IF NOT EXISTS trade_market_snapshots (
     candle_range        REAL,
     avg_range_20        REAL,
     candle_range_ratio  REAL,
+    atr_14              REAL,
+    adx_14              REAL,
+    range_atr_ratio     REAL,
     body_size           REAL,
     body_ratio          REAL,
     upper_wick_ratio    REAL,
@@ -92,6 +96,39 @@ CREATE TABLE IF NOT EXISTS trade_filter_evaluations (
     created_at  TEXT NOT NULL,
 
     FOREIGN KEY (trade_id) REFERENCES trades(trade_id)
+);
+
+CREATE TABLE IF NOT EXISTS strategy_evaluations (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    asset               TEXT NOT NULL,
+    timeframe_seconds   INTEGER NOT NULL,
+    candle_timestamp    TEXT NOT NULL,
+    config_epoch        TEXT,
+    strategy_revision   TEXT NOT NULL,
+    candidate_direction TEXT,
+    signal_direction    TEXT,
+    actionable          INTEGER NOT NULL,
+    rejection_reason    TEXT,
+
+    band_reentry        INTEGER,
+    candle_confirm      INTEGER,
+    rsi_extreme         INTEGER,
+    rsi_turn            INTEGER,
+    wick_confirm        INTEGER,
+    adx_ok              INTEGER,
+    range_atr_ok        INTEGER,
+
+    rsi                 REAL,
+    prev_rsi            REAL,
+    adx                 REAL,
+    atr                 REAL,
+    range_atr_ratio     REAL,
+    upper_wick_ratio    REAL,
+    lower_wick_ratio    REAL,
+    bb_top              REAL,
+    bb_bottom           REAL,
+    close               REAL,
+    created_at          TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS trade_candle_snapshots (
@@ -221,6 +258,10 @@ CREATE INDEX IF NOT EXISTS idx_filters_name_triggered
     ON trade_filter_evaluations(filter_name, triggered);
 CREATE INDEX IF NOT EXISTS idx_filters_trade
     ON trade_filter_evaluations(trade_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_strategy_eval_candle_epoch
+    ON strategy_evaluations(asset, timeframe_seconds, candle_timestamp, config_epoch);
+CREATE INDEX IF NOT EXISTS idx_strategy_eval_reason
+    ON strategy_evaluations(strategy_revision, rejection_reason);
 CREATE INDEX IF NOT EXISTS idx_candles_trade_tf
     ON trade_candle_snapshots(trade_id, timeframe_seconds);
 CREATE INDEX IF NOT EXISTS idx_price_path_trade
@@ -255,6 +296,7 @@ MARKET_SNAPSHOT_COLUMNS = [
     "swing_high", "swing_low", "swing_range", "fib_position",
     "distance_to_fib_382", "distance_to_fib_500", "distance_to_fib_618",
     "candle_range", "avg_range_20", "candle_range_ratio",
+    "atr_14", "adx_14", "range_atr_ratio",
     "body_size", "body_ratio", "upper_wick_ratio", "lower_wick_ratio",
     "trend_label", "source", "created_at",
 ]

@@ -1,9 +1,8 @@
 """Construcción del snapshot técnico de mercado (tabla trade_market_snapshots).
 
 NO calcula la señal ni decide nada: solo LEE el DataFrame que la estrategia ya
-enriqueció (mismas columnas que `FibPullbackStrategy.add_indicators`) y deriva
-las métricas extendidas (pendientes EMA, squeeze, posición en BB, Fibonacci,
-cuerpo/mechas, etiqueta de tendencia).
+enriqueció y deriva las métricas extendidas (pendientes EMA, squeeze, posición
+en BB, Fibonacci histórico, cuerpo/mechas, ATR, ADX y etiqueta de tendencia).
 
 Dos orígenes:
   - build_live_snapshot(df, tf)  -> en vivo, desde el frame de indicadores.
@@ -97,6 +96,7 @@ def build_live_snapshot(df, timeframe_seconds: int) -> dict:
 
     candle_range = _f(c.get("range"))
     avg_range_20 = _f(c.get("avg_range_20"))
+    atr = _f(c.get("atr"))
 
     body_size = None if (close is None or open_ is None) else abs(close - open_)
     upper_wick = (None if (high is None or open_ is None or close is None)
@@ -153,6 +153,9 @@ def build_live_snapshot(df, timeframe_seconds: int) -> dict:
         "candle_range": candle_range,
         "avg_range_20": avg_range_20,
         "candle_range_ratio": _div(candle_range, avg_range_20),
+        "atr_14": atr,
+        "adx_14": _f(c.get("adx")),
+        "range_atr_ratio": _div(candle_range, atr),
         "body_size": body_size,
         "body_ratio": _div(body_size, candle_range),
         "upper_wick_ratio": _div(upper_wick, candle_range),

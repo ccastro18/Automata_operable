@@ -1,9 +1,9 @@
-# IQ Binary Bot — Fib Pullback 5M (SOLO DEMO / ESTUDIO)
+# IQ Binary Bot — Confirmed Band Reversion (SOLO DEMO / ESTUDIO)
 
-Bot para **probar** una estrategia de opciones binarias en IQ Option usando
-**únicamente cuenta PRACTICE (demo)**. El objetivo de esta versión es **recolectar
-estadísticas** para ajustar la estrategia: corre de forma continua, sin límites
-diarios ni stop.
+Bot experimental de opciones binarias para **únicamente cuenta PRACTICE
+(demo)**. Desde el 24 de julio de 2026 ejecuta una estrategia nueva de
+reversión confirmada. Es un **forward test**, no una promesa de rentabilidad:
+FibPullback se retiró por EV negativo y no se mezcla con esta nueva época.
 
 > ⚠️ La librería `iqoptionapi` es **comunitaria, no oficial** y su propio repo
 > advierte *"ONLY FOR STUDY"*. Este bot está diseñado con seguros fuertes para
@@ -19,7 +19,7 @@ solo se toca `infrastructure/iqoption_client.py`.
 ```
 config/         settings.py        -> carga .env (pydantic) + blindaje de cuenta
 domain/         models.py          -> piezas del dominio (Signal, Trade, etc.)
-                strategy.py        -> estrategia pura: velas -> CALL/PUT/NONE
+                strategy.py        -> estrategia activa + FibPullback histórica
                 risk.py            -> filtros de "NO operar"
 infrastructure/ iqoption_client.py -> ÚNICO punto que toca iqoptionapi
                 candle_repository.py-> velas crudas -> DataFrame (min/max -> low/high)
@@ -34,7 +34,8 @@ web/            index.html         -> dashboard (estadísticas, activos, on/off)
 main.py         -> arranca el panel en http://127.0.0.1:8000
 ```
 
-- La **estrategia** no sabe nada de IQ Option: solo recibe velas y devuelve `CALL/PUT/NONE`.
+- La **estrategia** no sabe nada de IQ Option: recibe velas y devuelve
+  `CALL`, `PUT` o `NONE`.
 - El **ejecutor** no decide nada: solo ejecuta lo que el **motor de riesgo** aprobó.
 
 ---
@@ -73,7 +74,7 @@ python main.py
 Abre el panel en **http://127.0.0.1:8000**. Detén el servidor con `Ctrl+C`.
 
 Desde el panel puedes:
-- **Encender / apagar** el bot (botones ▶ / ■). El estado se recuerda entre reinicios.
+- Encender/apagar el forward test de `confirmed_band_reversion_v1`.
 - **Añadir / quitar activos** en caliente (máximo **4** a la vez).
 - Ver **estadísticas** (ganado/perdido/win-rate/profit) filtrando por **Real (demo)**,
   **Paper (filtrado)** o **Todo**, con gráficos por activo y por día.
@@ -84,18 +85,36 @@ Desde el panel puedes:
 
 ---
 
-## Estrategia (Fib Pullback 5M)
+## Estado de la estrategia
 
-- Timeframe **1M**, expiración **5M**.
-- EMA 50 / 200, RSI 14, Bollinger 20×2, Fibonacci sobre swing de 25 velas.
+`application/controller.py` construye `ConfirmedBandReversionStrategy`.
+La regla activa, simétrica para CALL/PUT, exige:
 
-**CALL**: tendencia alcista (`close>EMA200`, `EMA50>EMA200`), precio en zona Fib de
-retroceso, toque de EMA50/BB media, vela alcista dentro de banda, RSI≥51 y subiendo.
+- precio fuera/tocando Bollinger 20×2 y cierre de vuelta dentro;
+- vela y mecha de rechazo (mínimo 25%);
+- RSI(14) previamente extremo (35/65) y giro mínimo de 1.5 puntos;
+- ADX(14) ≤ 28 y rango de vela ≤ 1.8×ATR(14);
+- expiración 5M y payout mínimo 0.82.
 
-**PUT**: espejo del anterior.
+Todos los umbrales de estrategia son editables en caliente. Cada activo y vela
+evaluados se guarda en `strategy_evaluations`, incluso cuando no aparece
+señal, con el estado de cada condición y el motivo exacto de rechazo. Las
+operaciones accionables conservan además snapshots M1/M5/M15, filtros, payout,
+latencia y resultado para separar fallos de señal, activo, régimen, filtro o
+ejecución.
+
+`FibPullbackStrategy` sigue en `domain/strategy.py` solo para reproducir el
+histórico; el controlador no la construye. La revisión actual del
+`config_epoch` es `confirmed_band_reversion_v1`.
+
+### Por qué se retiró FibPullback
+
+En 3,506 operaciones no-OTC resueltas obtuvo 47.67% WR con payout medio
+aproximado 0.833 (breakeven 54.57%) y EV de −12.54% del stake. Además, sus
+máximo/mínimo móviles no garantizaban un swing cronológicamente válido.
 
 ### Filtros de "NO operar"
-- Payout < `MIN_PAYOUT` (80%).
+- Payout < `MIN_PAYOUT` (82%).
 - Squeeze Bollinger: `bb_width < mediana(100)*SQUEEZE_FACTOR`.
 - Vela gigante: `range > avg_range_20 * GIANT_CANDLE_FACTOR`.
 - Mercado lateral: `|EMA50-EMA200| < avg_range_20 * LATERAL_FACTOR`.

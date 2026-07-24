@@ -103,14 +103,35 @@ FIELDS: list[Field] = [
     Field("risk_window_max_losses", "int", 1, 50, "Máx. pérdidas en ventana", "Gestión de riesgo",
           "Pérdidas REALES dentro de la ventana que detienen el real hasta el fin de la ventana (def 3)."),
 
-    # --- Estrategia (indicadores) ---
-    Field("ema_fast", "int", 1, 500, "EMA rápida", "Estrategia (indicadores)", "Periodo (def 50)."),
-    Field("ema_slow", "int", 1, 1000, "EMA lenta", "Estrategia (indicadores)", "Periodo (def 200)."),
-    Field("rsi_period", "int", 1, 100, "RSI periodo", "Estrategia (indicadores)", "def 14."),
-    Field("bb_period", "int", 1, 200, "Bollinger periodo", "Estrategia (indicadores)", "def 20."),
-    Field("bb_mult", "float", 1, 5, "Bollinger desviación", "Estrategia (indicadores)", "def 2."),
-    Field("fib_lookback", "int", 5, 500, "Fibonacci lookback", "Estrategia (indicadores)",
-          "Velas para el swing (def 25)."),
+    # --- Estrategia activa: Confirmed Band Reversion ---
+    Field("rsi_period", "int", 2, 100, "RSI periodo", "Estrategia activa",
+          "Periodo Wilder del RSI usado para detectar extremo y giro."),
+    Field("bb_period", "int", 5, 200, "Bollinger periodo", "Estrategia activa",
+          "Media y ventana de volatilidad de las bandas (def 20)."),
+    Field("bb_mult", "float", 1, 5, "Bollinger desviación", "Estrategia activa",
+          "Número de desviaciones poblacionales de las bandas (def 2)."),
+    Field("atr_period", "int", 2, 100, "ATR periodo", "Estrategia activa",
+          "Periodo Wilder para normalizar el rango de la vela."),
+    Field("adx_period", "int", 2, 100, "ADX periodo", "Estrategia activa",
+          "Periodo Wilder para medir fuerza de tendencia."),
+    Field("reversion_rsi_threshold", "float", 20, 49, "RSI extremo", "Estrategia activa",
+          "CALL exige RSI previo <= valor; PUT exige RSI previo >= 100-valor."),
+    Field("reversion_min_rsi_turn", "float", 0, 20, "Giro RSI mínimo", "Estrategia activa",
+          "Cambio mínimo del RSI hacia la reversión entre las dos últimas velas."),
+    Field("reversion_min_wick_ratio", "float", 0, 1, "Mecha mínima", "Estrategia activa",
+          "Fracción mínima de la vela que debe rechazar el extremo (0.25 = 25%)."),
+    Field("reversion_max_adx", "float", 0, 100, "ADX máximo", "Estrategia activa",
+          "Evita intentar reversión en tendencias demasiado fuertes."),
+    Field("reversion_max_range_atr", "float", 0.5, 10, "Rango/ATR máximo", "Estrategia activa",
+          "Evita entrar contra velas de choque anormalmente grandes."),
+
+    # --- Contexto histórico, no participa en la señal nueva ---
+    Field("ema_fast", "int", 1, 500, "EMA rápida", "Contexto diagnóstico",
+          "Se conserva para snapshots y análisis de régimen; no decide la entrada."),
+    Field("ema_slow", "int", 1, 1000, "EMA lenta", "Contexto diagnóstico",
+          "Se conserva para snapshots y análisis de régimen; no decide la entrada."),
+    Field("fib_lookback", "int", 5, 500, "Rango histórico lookback", "Contexto diagnóstico",
+          "Compatibilidad con el histórico FibPullback; no participa en la señal nueva."),
 ]
 
 FIELD_MAP: dict[str, Field] = {f.key: f for f in FIELDS}
@@ -168,6 +189,12 @@ def defaults_from_settings(s) -> dict:
         "risk_window_max_losses": 3,
         "ema_fast": 50, "ema_slow": 200, "rsi_period": 14,
         "bb_period": 20, "bb_mult": 2, "fib_lookback": 25,
+        "atr_period": 14, "adx_period": 14,
+        "reversion_rsi_threshold": 35.0,
+        "reversion_min_rsi_turn": 1.5,
+        "reversion_min_wick_ratio": 0.25,
+        "reversion_max_adx": 28.0,
+        "reversion_max_range_atr": 1.8,
     }
 
 

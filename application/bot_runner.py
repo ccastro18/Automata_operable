@@ -69,6 +69,14 @@ class BotRunner:
         result = self.signal_service.get_signal(asset)
         signal = result.signal
 
+        # Persiste el embudo completo de la estrategia, incluso cuando no hay
+        # CALL/PUT. Así se puede distinguir "no hay setups" de "un umbral está
+        # demasiado estricto" sin volver a esperar datos ciegamente.
+        if result.strategy_evaluation:
+            evaluation = dict(result.strategy_evaluation)
+            evaluation["config_epoch"] = self.executor.config_epoch
+            self.executor.db.write_strategy_evaluation(evaluation)
+
         # Sin velas válidas no hay nada que hacer (evita resolver paper-trades
         # contra un precio 0).
         if result.last_close <= 0:

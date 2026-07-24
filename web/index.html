@@ -220,6 +220,7 @@
       <span id="b-mode" class="badge">…</span>
       <span id="b-balance" class="badge">balance —</span>
       <span id="b-run" class="badge">…</span>
+      <span id="b-strategy" class="badge warn">estrategia —</span>
     </div>
   </div>
   <div class="header-actions">
@@ -551,6 +552,11 @@ async function refreshStatus(){
 	    const resuming = !s.running && s.wanted_running && (s.connecting || s.recovering);
 	    if(resuming){ run.innerHTML = '<span class="spin"></span>Reanudando'; run.className = "badge warn"; }
 	    else { run.textContent = s.running ? "▶ Operando" : "■ Detenido"; run.className = "badge " + (s.running?"on":"off"); }
+
+	    const strategy = document.getElementById('b-strategy');
+	    strategy.textContent = s.strategy_name;
+	    strategy.className = "badge on";
+	    strategy.title = s.strategy_reason || "";
 
 	    document.getElementById('btn-start').disabled = s.running || s.connecting || s.recovering;
 	    document.getElementById('btn-stop').disabled = !s.running || s.recovering;

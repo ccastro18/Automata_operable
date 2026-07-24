@@ -23,7 +23,7 @@ class Signal:
     asset: str
     direction: Direction
     signal_time: datetime
-    strategy_reason: str  # fib_pullback_call / fib_pullback_put / no_signal / not_enough_data
+    strategy_reason: str  # confirmed_band_reversion_call/put o condición que rechazó
 
     # Precio de referencia de entrada (close de la vela que disparó la señal)
     close: float = 0.0
@@ -116,6 +116,9 @@ class SignalResult:
     market_snapshot: dict | None = None
     candle_rows: list = field(default_factory=list)
     candle_fetch_ms: float | None = None
+    # Diagnóstico de TODA vela evaluada, haya o no señal. Permite contar qué
+    # condición de la estrategia está impidiendo entradas sin sesgo de selección.
+    strategy_evaluation: dict | None = None
 
     # Multi-timeframe (M5/M15), poblado SOLO cuando `signal.is_actionable` y
     # `collect_multi_tf` está activo (ver SignalService._fetch_extra_timeframe).
